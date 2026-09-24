@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "agents": [
+    {
+      "id": "claude_desktop",
+      "name": "Claude Desktop",
+      "vendor": "Anthropic",
+      "category": "ai_assistant",
+      "processes": ["Claude"],
+      "apps": ["Claude"],
+      "bundle_ids": ["com.anthropic.claudefordesktop"],
+      "mcp_configs": [
+        {"path": "{config}/Claude/claude_desktop_config.json", "format": "json"}
+      ]
+    },
+    {
+      "id": "claude_code",
+      "name": "Claude Code",
+      "vendor": "Anthropic",
+      "category": "ai_coding_agent",
+      "processes": ["claude"],
+      "mcp_configs": [
+        {"path": "~/.claude.json", "format": "json"},
+        {"path": "~/.claude/settings.json", "format": "json"}
+      ]
+    },
+    {
+      "id": "cursor",
+      "name": "Cursor",
+      "vendor": "Anysphere",
+      "category": "ai_coding_agent",
+      "processes": ["Cursor"],
+      "apps": ["Cursor"],
+      "bundle_ids": ["com.todesktop.230313mzl4w4u92"],
+      "mcp_configs": [
+        {"path": "~/.cursor/mcp.json", "format": "json"}
+      ]
+    },
+    {
+      "id": "windsurf",
+      "name": "Windsurf",
+      "vendor": "Codeium",
+      "category": "ai_coding_agent",
+      "processes": ["Windsurf"],
+      "apps": ["Windsurf"],
+      "mcp_configs": [
+        {"path": "~/.codeium/windsurf/mcp_config.json", "format": "json"}
+      ]
+    },
+    {
+      "id": "vscode",
+      "name": "Visual Studio Code (Copilot / MCP)",
+      "vendor": "Microsoft",
+      "category": "mcp_client",
+      "processes": ["Code", "code"],
+      "apps": ["Visual Studio Code", "Microsoft Visual Studio Code"],
+      "bundle_ids": ["com.microsoft.VSCode"],
+      "mcp_configs": [
+        {"path": "{config}/Code/User/mcp.json", "format": "json"}
+      ],
+      "extension_dirs": ["~/.vscode/extensions/github.copilot-*", "~/.vscode/extensions/github.copilot-chat-*"]
+    },
+    {
+      "id": "chatgpt_desktop",
+      "name": "ChatGPT Desktop",
+      "vendor": "OpenAI",
+      "category": "ai_assistant",
+      "processes": ["ChatGPT"],
+      "apps": ["ChatGPT"],
+      "bundle_ids": ["com.openai.chat"]
+    },
+    {
+      "id": "codex_cli",
+      "name": "Codex CLI",
+      "vendor": "OpenAI",
+      "category": "ai_coding_agent",
+      "processes": ["codex"],
+      "mcp_configs": [
+        {"path": "~/.codex/config.toml", "format": "toml"}
+      ]
+    },
+    {
+      "id": "gemini_cli",
+      "name": "Gemini CLI",
+      "vendor": "Google",
+      "category": "ai_coding_agent",
+      "processes": ["gemini"],
+      "mcp_configs": [
+        {"path": "~/.gemini/settings.json", "format": "json"}
+      ]
+    },
+    {
+      "id": "ollama",
+      "name": "Ollama",
+      "vendor": "Ollama",
+      "category": "local_llm",
+      "processes": ["ollama", "Ollama"],
+      "apps": ["Ollama"],
+      "ports": [11434]
+    },
+    {
+      "id": "lm_studio",
+      "name": "LM Studio",
+      "vendor": "Element Labs",
+      "category": "local_llm",
+      "processes": ["LM Studio", "lms"],
+      "apps": ["LM Studio"],
+      "ports": [1234]
+    },
+    {
+      "id": "llama_cpp",
+      "name": "llama.cpp server",
+      "vendor": "ggml",
+      "category": "local_llm",
+      "processes": ["llama-server"],
+      "ports": [8080]
+    }
+  ]
+}

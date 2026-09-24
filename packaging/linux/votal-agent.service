@@ -1,0 +1,33 @@
+[Unit]
+Description=Votal endpoint agent
+Documentation=https://github.com/sundi133/nexus-agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/votal-agent run
+# Exit code 3 = self-update staged; always restart.
+Restart=always
+RestartSec=10
+StateDirectory=votal
+StateDirectoryMode=0700
+ConfigurationDirectory=votal
+ConfigurationDirectoryMode=0700
+
+# Hardening. The agent needs root to read every process, socket and user
+# home (for MCP configs), but not to write outside its own state.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+PrivateTmp=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+ReadWritePaths=/var/lib/votal /etc/votal
+# /usr/bin is intentionally read-only: on Linux apt/dnf own the binary, so
+# upgrades ship as new .deb/.rpm packages rather than agent self-update.
+
+[Install]
+WantedBy=multi-user.target

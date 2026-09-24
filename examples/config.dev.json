@@ -1,0 +1,15 @@
+{
+  "server_url": "http://127.0.0.1:8080",
+  "allow_insecure_http": true,
+  "enrollment_token": "dev-token",
+  "state_dir": "./.votal-state",
+  "local_api_addr": "127.0.0.1:7443",
+  "log_level": "debug",
+  "intervals": {
+    "heartbeat": "10s",
+    "telemetry": "1m",
+    "policy": "30s",
+    "commands": "5s",
+    "updates": "6h"
+  }
+}

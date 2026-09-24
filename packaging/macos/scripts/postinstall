@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+mkdir -p /Library/Logs/Votal
+chmod 700 /Library/Logs/Votal
+chown root:wheel /Library/LaunchDaemons/com.votal.agent.plist
+chmod 644 /Library/LaunchDaemons/com.votal.agent.plist
+
+# MDM (Jamf, Kandji, Intune...) can pre-seed the enrollment settings in
+# /Library/Votal/install.env:  VOTAL_SERVER_URL=...  VOTAL_ENROLLMENT_TOKEN=...
+if [ -f /Library/Votal/install.env ]; then
+  . /Library/Votal/install.env
+  /Library/Votal/votal-agent configure \
+    -server-url "$VOTAL_SERVER_URL" -enrollment-token "$VOTAL_ENROLLMENT_TOKEN"
+  rm -f /Library/Votal/install.env
+fi
+
+launchctl bootstrap system /Library/LaunchDaemons/com.votal.agent.plist
+launchctl enable system/com.votal.agent
+exit 0

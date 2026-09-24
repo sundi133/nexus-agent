@@ -1,0 +1,49 @@
+{
+  "version": "2026-09-24.1",
+  "default_decision": "allow",
+  "device": {
+    "managed": true,
+    "groups": ["engineering-laptops"],
+    "risk_score": 20
+  },
+  "directory": {
+    "alice": ["engineering"],
+    "bob": ["finance"]
+  },
+  "policies": [
+    {
+      "id": "pol_prod_db",
+      "name": "Production Database Protection",
+      "mode": "enforce",
+      "conditions": {
+        "device": { "managed": true },
+        "user": { "group": "engineering" },
+        "agent": { "type": "ai_agent" }
+      },
+      "resources": ["production_database", "db:prod/*"],
+      "actions": ["read"],
+      "deny": ["write", "delete", "export"]
+    },
+    {
+      "id": "pol_unmanaged_block",
+      "name": "Block AI agents on unmanaged devices",
+      "mode": "enforce",
+      "conditions": {
+        "device": { "managed": false },
+        "agent": { "type": "ai_agent" }
+      },
+      "deny": ["*"]
+    },
+    {
+      "id": "pol_github_push_monitor",
+      "name": "Monitor AI pushes to GitHub",
+      "mode": "monitor",
+      "conditions": {
+        "agent": { "types": ["ai_coding_agent"] }
+      },
+      "resources": ["github:*"],
+      "tools": ["github.*"],
+      "deny": ["push", "merge"]
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+<!--
+  WiX v4 source for VotalAgent.msi.
+
+    wix build packaging/windows/VotalAgent.wxs -ext WixToolset.Util.wixext ^
+      -d Version=0.1.0 -d BinPath=dist\votal-agent_windows_amd64.exe -arch x64 ^
+      -o dist\VotalAgent-0.1.0-x64.msi
+
+  Silent install via Intune / SCCM / GPO:
+
+    msiexec /i VotalAgent.msi /qn SERVER_URL=https://api.votal.ai ENROLLMENT_TOKEN=xxxx
+
+  Sign the .exe before building and the .msi after (signtool sign /fd sha256 /tr <tsa> /td sha256).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Package Name="Votal Agent" Manufacturer="Votal" Version="$(Version)"
+           UpgradeCode="6f1c2b7e-5d0a-4b8e-9d3c-7a4e2f1b9c01" Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Votal Agent is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Public properties settable on the msiexec command line. Hidden so the
+         token is not written to the MSI log. -->
+    <Property Id="SERVER_URL" Secure="yes" />
+    <Property Id="ENROLLMENT_TOKEN" Secure="yes" Hidden="yes" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Votal">
+        <Component Id="AgentExe" Guid="3b0d6a51-8f5e-4a7c-a2c4-1e9f0d7b6a22">
+          <File Id="VotalAgentExe" Source="$(BinPath)" Name="votal-agent.exe" KeyPath="yes" />
+
+          <ServiceInstall Id="VotalAgentService" Name="VotalAgent" DisplayName="Votal Agent"
+                          Description="Votal endpoint agent: device posture, AI agent visibility, policy enforcement."
+                          Type="ownProcess" Start="auto" ErrorControl="normal"
+                          Account="LocalSystem" Arguments="run">
+            <!-- Restart on any failure, incl. exit after a staged self-update. -->
+            <util:ServiceConfig FirstFailureActionType="restart"
+                                SecondFailureActionType="restart"
+                                ThirdFailureActionType="restart"
+                                RestartServiceDelayInSeconds="10"
+                                ResetPeriodInDays="1" />
+          </ServiceInstall>
+          <ServiceControl Id="VotalAgentServiceControl" Name="VotalAgent"
+                          Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Votal Agent">
+      <ComponentRef Id="AgentExe" />
+    </Feature>
+
+    <!-- Write config.json (with a locked-down ACL) before the service starts. -->
+    <SetProperty Id="ConfigureAgent"
+                 Value="&quot;[#VotalAgentExe]&quot; configure -server-url &quot;[SERVER_URL]&quot; -enrollment-token &quot;[ENROLLMENT_TOKEN]&quot;"
+                 Before="ConfigureAgent" Sequence="execute" />
+    <CustomAction Id="ConfigureAgent" DllEntry="WixQuietExec64" BinaryRef="Wix4UtilCA_X64"
+                  Execute="deferred" Impersonate="no" Return="check" HideTarget="yes" />
+    <InstallExecuteSequence>
+      <Custom Action="ConfigureAgent" Before="StartServices"
+              Condition="SERVER_URL AND NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>
