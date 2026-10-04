@@ -1,5 +1,7 @@
 #[cfg(windows)]
 mod etw;
+#[cfg(windows)]
+mod wfp;
 
 #[cfg(not(windows))]
 fn main() {
@@ -9,13 +11,18 @@ fn main() {
 #[cfg(windows)]
 mod service {
     use crate::etw::{EtwProcessStart, ProcessTrace};
-    use nexus_agent_core::{verify_signed_policy, AgentHealth, CapabilityState, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
+    use crate::wfp::WfpSession;
+    use nexus_agent_core::{
+        verify_signed_policy, AgentHealth, CapabilityState, DecisionAction, EnforcementMode,
+        EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope,
+    };
     use std::{
         collections::HashMap,
         ffi::OsString,
         fs::{create_dir_all, OpenOptions},
         io::{self, Write},
         mem::{size_of, zeroed},
+        net::Ipv4Addr,
         path::Path,
         sync::mpsc,
         time::Duration,
@@ -59,6 +66,14 @@ mod service {
         parent_pid: u32,
         image_name: String,
     }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct NetworkEnforcementPlan {
+        rule_id: String,
+        remote_ipv4: String,
+        application_path: Option<String>,
+    }
+
 
     pub fn run() -> Result<()> {
         service_dispatcher::start(SERVICE_NAME, ffi_service_main)
@@ -105,6 +120,8 @@ mod service {
             "no verified policy loaded; telemetry-only"
         });
 
+        let (network_session, network_state, network_detail) =
+            configure_network_enforcement(policy.as_ref());
         let (etw_tx, etw_rx) = mpsc::channel();
 
         match ProcessTrace::start(etw_tx) {
@@ -114,6 +131,8 @@ mod service {
                     policy.as_ref(),
                     CapabilityState::Active,
                     "ETW Microsoft-Windows-Kernel-Process",
+                    network_state,
+                    &network_detail,
                 );
                 let _ = write_health(&health);
                 run_etw_loop(&shutdown_rx, &etw_rx, policy.as_ref());
@@ -125,11 +144,15 @@ mod service {
                     policy.as_ref(),
                     CapabilityState::Fallback,
                     &detail,
+                    network_state,
+                    &network_detail,
                 );
                 let _ = write_health(&health);
                 run_snapshot_loop(&shutdown_rx, policy.as_ref());
             }
         }
+
+        drop(network_session);
 
         status_handle.set_service_status(ServiceStatus {
             service_type: SERVICE_TYPE,
@@ -261,6 +284,8 @@ mod service {
         policy: Option<&PolicyBundle>,
         telemetry_state: CapabilityState,
         telemetry_detail: &str,
+        network_state: CapabilityState,
+        network_detail: &str,
     ) -> AgentHealth {
         let policy_version = policy.map(|policy| policy.version);
         let policy_state = if policy.is_some() {
@@ -294,6 +319,111 @@ mod service {
                     "no verified policy; process blocking unavailable"
                 },
             )
+            .with_capability("network_enforcement", network_state, network_detail)
+    }
+
+    fn select_network_enforcement(
+        policy: &PolicyBundle,
+    ) -> Result<Option<NetworkEnforcementPlan>, String> {
+        if policy.mode != EnforcementMode::Enforce {
+            return Ok(None);
+        }
+
+        let mut network_rules = policy
+            .rules
+            .iter()
+            .filter(|rule| {
+                rule.action == DecisionAction::Deny && !rule.destination_hosts.is_empty()
+            });
+
+        let Some(rule) = network_rules.next() else {
+            return Ok(None);
+        };
+
+        if network_rules.next().is_some() {
+            return Err(
+                "multiple deny network rules are not yet representable by the Windows WFP adapter"
+                    .to_string(),
+            );
+        }
+
+        if rule.destination_hosts.len() != 1 || rule.executable_paths.len() > 1 {
+            return Err(
+                "network deny rule requires exactly one destination and at most one executable"
+                    .to_string(),
+            );
+        }
+
+        let remote = rule.destination_hosts[0]
+            .parse::<Ipv4Addr>()
+            .map_err(|_| {
+                "network deny destination must currently be an exact IPv4 address".to_string()
+            })?;
+
+        Ok(Some(NetworkEnforcementPlan {
+            rule_id: rule.id.clone(),
+            remote_ipv4: remote.to_string(),
+            application_path: rule.executable_paths.first().cloned(),
+        }))
+    }
+
+    fn configure_network_enforcement(
+        policy: Option<&PolicyBundle>,
+    ) -> (Option<WfpSession>, CapabilityState, String) {
+        let Some(policy) = policy else {
+            return (
+                None,
+                CapabilityState::Unavailable,
+                "no verified signed policy; WFP runtime filter not installed".to_string(),
+            );
+        };
+
+        match select_network_enforcement(policy) {
+            Ok(None) => (
+                None,
+                CapabilityState::Shadow,
+                if policy.mode == EnforcementMode::Audit {
+                    "policy is audit mode; WFP runtime filter intentionally not installed"
+                        .to_string()
+                } else {
+                    "no supported exact-IPv4 deny network rule configured".to_string()
+                },
+            ),
+            Err(detail) => (None, CapabilityState::Shadow, detail),
+            Ok(Some(plan)) => {
+                let mut session = match WfpSession::open() {
+                    Ok(session) => session,
+                    Err(error) => {
+                        return (
+                            None,
+                            CapabilityState::Unavailable,
+                            format!("cannot open dynamic WFP session: 0x{error:08x}"),
+                        )
+                    }
+                };
+
+                match session.install_exact_ipv4(
+                    &plan.remote_ipv4,
+                    plan.application_path.as_deref(),
+                ) {
+                    Ok(()) => (
+                        Some(session),
+                        CapabilityState::Active,
+                        format!(
+                            "dynamic WFP block active for rule={} remote_ipv4={} app_scope={}; stopping the service removes the filter",
+                            plan.rule_id,
+                            plan.remote_ipv4,
+                            plan.application_path.as_deref().unwrap_or("all")
+                        ),
+                    ),
+                    Err(error) => (
+                        None,
+                        CapabilityState::Unavailable,
+                        format!("WFP rule installation failed: 0x{error:08x}"),
+                    ),
+                }
+            }
+        }
     }
 
     fn write_health(health: &AgentHealth) -> io::Result<()> {
@@ -386,6 +516,66 @@ mod service {
 
             let _ = CloseHandle(snapshot);
             Ok(result)
+        }
+    }
+
+    #[cfg(test)]
+    mod policy_tests {
+        use super::*;
+
+        fn rule_policy(
+            mode: EnforcementMode,
+            destinations: Vec<&str>,
+            executables: Vec<&str>,
+        ) -> PolicyBundle {
+            PolicyBundle {
+                version: 1,
+                mode,
+                rules: vec![nexus_agent_core::PolicyRule {
+                    id: "network-test".into(),
+                    category: "network".into(),
+                    action: DecisionAction::Deny,
+                    executable_paths: executables.into_iter().map(str::to_string).collect(),
+                    destination_hosts: destinations.into_iter().map(str::to_string).collect(),
+                }],
+            }
+        }
+
+        #[test]
+        fn audit_policy_never_builds_wfp_plan() {
+            assert_eq!(
+                select_network_enforcement(&rule_policy(
+                    EnforcementMode::Audit,
+                    vec!["203.0.113.10"],
+                    vec![],
+                ))
+                .unwrap(),
+                None
+            );
+        }
+
+        #[test]
+        fn exact_ipv4_rule_builds_plan() {
+            let plan = select_network_enforcement(&rule_policy(
+                EnforcementMode::Enforce,
+                vec!["203.0.113.10"],
+                vec![r"C:\Test\client.exe"],
+            ))
+            .unwrap()
+            .unwrap();
+
+            assert_eq!(plan.remote_ipv4, "203.0.113.10");
+            assert_eq!(plan.application_path.as_deref(), Some(r"C:\Test\client.exe"));
+        }
+
+        #[test]
+        fn hostname_rule_stays_shadow_only() {
+            assert!(select_network_enforcement(&rule_policy(
+                EnforcementMode::Enforce,
+                vec!["example.com"],
+                vec![],
+            ))
+            .is_err());
         }
     }
 
