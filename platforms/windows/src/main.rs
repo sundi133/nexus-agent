@@ -1,3 +1,6 @@
+#[cfg(windows)]
+mod etw;
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("nexus-agent-windows is only supported on Windows");
@@ -5,6 +8,7 @@ fn main() {
 
 #[cfg(windows)]
 mod service {
+    use crate::etw::{EtwProcessStart, ProcessTrace};
     use nexus_agent_core::{verify_signed_policy, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
     use std::{
         collections::HashMap,
@@ -43,6 +47,9 @@ mod service {
     const SERVICE_NAME: &str = "VotalNexusAgent";
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
     const EVENT_LOG_PATH: &str = r"C:\ProgramData\Votal\Nexus\events.jsonl";
+    const POLICY_PATH: &str = r"C:\ProgramData\Votal\Nexus\policy.signed.json";
+    // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
+    const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
     #[derive(Debug, Clone)]
     struct ProcessInfo {
@@ -96,28 +103,18 @@ mod service {
             "no verified policy loaded; telemetry-only"
         });
 
-        let mut known = snapshot_processes().unwrap_or_default();
+        let (etw_tx, etw_rx) = mpsc::channel();
 
-        loop {
-            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+        match ProcessTrace::start(etw_tx) {
+            Ok(_trace) => {
+                let _ = write_diagnostic("ETW process-start telemetry active");
+                run_etw_loop(&shutdown_rx, &etw_rx, policy.as_ref());
             }
-
-            match snapshot_processes() {
-                Ok(current) => {
-                    for (pid, process) in &current {
-                        if !known.contains_key(pid) {
-                            let full_path = query_process_path(*pid)
-                                .unwrap_or_else(|| process.image_name.clone());
-                            let _ = emit_process_start(process, full_path, policy.as_ref());
-                        }
-                    }
-                    known = current;
-                }
-                Err(error) => {
-                    let _ = write_diagnostic(&format!("process snapshot failed: {error}"));
-                }
+            Err(error) => {
+                let _ = write_diagnostic(&format!(
+                    "ETW unavailable ({error}); falling back to snapshot polling"
+                ));
+                run_snapshot_loop(&shutdown_rx, policy.as_ref());
             }
         }
 
@@ -132,6 +129,66 @@ mod service {
         })?;
 
         Ok(())
+    }
+
+    fn run_etw_loop(
+        shutdown_rx: &mpsc::Receiver<()>,
+        etw_rx: &mpsc::Receiver<EtwProcessStart>,
+        policy: Option<&PolicyBundle>,
+    ) {
+        loop {
+            if shutdown_rx.try_recv().is_ok() {
+                break;
+            }
+
+            match etw_rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(start) => {
+                    let process = ProcessInfo {
+                        pid: start.pid,
+                        parent_pid: start.parent_pid,
+                        image_name: start.image_name,
+                    };
+                    let full_path = query_process_path(process.pid)
+                        .unwrap_or_else(|| process.image_name.clone());
+                    let _ = emit_process_start(&process, full_path, policy);
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let _ = write_diagnostic("ETW event channel disconnected");
+                    break;
+                }
+            }
+        }
+    }
+
+    fn run_snapshot_loop(
+        shutdown_rx: &mpsc::Receiver<()>,
+        policy: Option<&PolicyBundle>,
+    ) {
+        let mut known = snapshot_processes().unwrap_or_default();
+
+        loop {
+            match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
+                Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+
+            match snapshot_processes() {
+                Ok(current) => {
+                    for (pid, process) in &current {
+                        if !known.contains_key(pid) {
+                            let full_path = query_process_path(*pid)
+                                .unwrap_or_else(|| process.image_name.clone());
+                            let _ = emit_process_start(process, full_path, policy);
+                        }
+                    }
+                    known = current;
+                }
+                Err(error) => {
+                    let _ = write_diagnostic(&format!("process snapshot failed: {error}"));
+                }
+            }
+        }
     }
 
     fn emit_process_start(process: &ProcessInfo, executable_path: String, policy: Option<&PolicyBundle>) -> io::Result<()> {
