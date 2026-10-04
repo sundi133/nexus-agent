@@ -178,11 +178,12 @@ cleanup:
 
 static const GUID NEXUS_DYNAMIC_SUBLAYER_KEY =
     {0x2d3b89a2,0x19f9,0x43d5,{0x8e,0x25,0x0f,0x1d,0x9e,0xb1,0x55,0x68}};
-static const GUID NEXUS_DYNAMIC_FILTER_KEY =
-    {0x5ed76369,0xbcf0,0x4cbc,{0xa0,0x7f,0x63,0xe0,0x2d,0x3a,0x67,0x45}};
+#define NEXUS_MAX_DYNAMIC_FILTERS 256
 
 typedef struct NEXUS_WFP_SESSION {
     HANDLE engine;
+    UINT64 filter_ids[NEXUS_MAX_DYNAMIC_FILTERS];
+    UINT32 filter_count;
 } NEXUS_WFP_SESSION;
 
 static DWORD ensure_dynamic_sublayer(HANDLE engine) {
@@ -202,12 +203,25 @@ static DWORD ensure_dynamic_sublayer(HANDLE engine) {
     return result;
 }
 
-static DWORD dynamic_remove_filter(HANDLE engine) {
-    DWORD result = FwpmFilterDeleteByKey0(engine, &NEXUS_DYNAMIC_FILTER_KEY);
-    if (result == FWP_E_FILTER_NOT_FOUND) {
-        return ERROR_SUCCESS;
+static DWORD dynamic_remove_filters(NEXUS_WFP_SESSION *session) {
+    if (session == NULL || session->engine == NULL) {
+        return ERROR_INVALID_PARAMETER;
     }
-    return result;
+
+    DWORD first_error = ERROR_SUCCESS;
+
+    for (UINT32 i = 0; i < session->filter_count; ++i) {
+        DWORD result = FwpmFilterDeleteById0(session->engine, session->filter_ids[i]);
+        if (result != ERROR_SUCCESS &&
+            result != FWP_E_FILTER_NOT_FOUND &&
+            first_error == ERROR_SUCCESS) {
+            first_error = result;
+        }
+        session->filter_ids[i] = 0;
+    }
+
+    session->filter_count = 0;
+    return first_error;
 }
 
 DWORD nexus_wfp_session_open(void **session_out) {
@@ -257,7 +271,7 @@ DWORD nexus_wfp_session_clear(void *opaque_session) {
         return ERROR_INVALID_PARAMETER;
     }
     NEXUS_WFP_SESSION *session = (NEXUS_WFP_SESSION *)opaque_session;
-    return dynamic_remove_filter(session->engine);
+    return dynamic_remove_filters(session);
 }
 
 DWORD nexus_wfp_session_install_exact_ipv4(
@@ -285,12 +299,11 @@ DWORD nexus_wfp_session_install_exact_ipv4(
         }
     }
 
-    result = dynamic_remove_filter(session->engine);
-    if (result != ERROR_SUCCESS) {
+    if (session->filter_count >= NEXUS_MAX_DYNAMIC_FILTERS) {
         if (app_id != NULL) {
             FwpmFreeMemory0((void **)&app_id);
         }
-        return result;
+        return ERROR_TOO_MANY_NAMES;
     }
 
     FWPM_FILTER_CONDITION0 conditions[2];
@@ -313,7 +326,6 @@ DWORD nexus_wfp_session_install_exact_ipv4(
 
     FWPM_FILTER0 filter;
     ZeroMemory(&filter, sizeof(filter));
-    filter.filterKey = NEXUS_DYNAMIC_FILTER_KEY;
     filter.displayData.name = L"Votal Nexus runtime outbound block";
     filter.displayData.description =
         L"Dynamic exact-destination block owned by the Nexus Windows service";
@@ -324,7 +336,12 @@ DWORD nexus_wfp_session_install_exact_ipv4(
     filter.filterCondition = conditions;
     filter.action.type = FWP_ACTION_BLOCK;
 
-    result = FwpmFilterAdd0(session->engine, &filter, NULL, NULL);
+    UINT64 filter_id = 0;
+    result = FwpmFilterAdd0(session->engine, &filter, NULL, &filter_id);
+
+    if (result == ERROR_SUCCESS) {
+        session->filter_ids[session->filter_count++] = filter_id;
+    }
 
     if (app_id != NULL) {
         FwpmFreeMemory0((void **)&app_id);
@@ -339,6 +356,7 @@ void nexus_wfp_session_close(void *opaque_session) {
 
     NEXUS_WFP_SESSION *session = (NEXUS_WFP_SESSION *)opaque_session;
     if (session->engine != NULL) {
+        (void)dynamic_remove_filters(session);
         FwpmEngineClose0(session->engine);
         session->engine = NULL;
     }
