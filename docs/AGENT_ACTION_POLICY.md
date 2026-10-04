@@ -157,3 +157,31 @@ On Linux, Nexus reads `SO_PEERCRED` and records the peer PID, UID, GID, and `/pr
 On macOS, the current Unix path uses peer effective UID/GID from the kernel. `expected_uid` is enforceable there. Process executable/code-signature attestation is not yet implemented on macOS, so configuring `executable_paths` for macOS producers will intentionally fail authentication rather than silently downgrading the check.
 
 Loopback TCP remains for compatibility. It does not provide kernel peer process identity and therefore must not be described as OS/process attestation.
+
+
+## Kernel client-process attestation on Windows
+
+On Windows, configure a named pipe instead of loopback TCP:
+
+```json
+{
+  "local_ingest_port": null,
+  "local_ingest_socket_path": null,
+  "local_ingest_pipe_name": "VotalNexusAgentActions",
+  "local_ingest_token_file": null,
+  "local_ingest_producers": [
+    {
+      "agent_id": "coding-agent",
+      "token_file": "C:\\ProgramData\\Votal\\Nexus\\producers\\coding-agent.token",
+      "expected_uid": null,
+      "executable_paths": ["C:\\Program Files\\CodingAgent\\agent.exe"]
+    }
+  ]
+}
+```
+
+The runtime creates `\\.\pipe\VotalNexusAgentActions`, obtains the connecting client PID using the named-pipe API, opens that process with limited query rights, and resolves its executable path. If `executable_paths` is configured for the producer, the kernel-derived client executable must match one of those paths.
+
+If the request supplies a PID that differs from the pipe-derived client PID, Nexus rejects the request before policy evaluation. Windows does not use the Unix `expected_uid` field; configuring it on a Windows producer causes the identity check to fail rather than silently ignoring it.
+
+Named-pipe client PID/executable attestation is stronger than loopback TCP, but Windows code-signing publisher/hash attestation is still a future hardening layer.
