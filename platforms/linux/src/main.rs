@@ -15,12 +15,13 @@ mod linux_agent {
         RansomwareResponseDecision, RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
     };
     use std::{
+        collections::HashSet,
         ffi::CString,
         fs::{read_link, OpenOptions},
         io::{self, Write},
         mem::size_of,
         os::fd::RawFd,
-        path::PathBuf,
+        path::{Path, PathBuf},
         time::{Duration, Instant},
     };
     use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -30,6 +31,8 @@ mod linux_agent {
     const POLICY_PATH: &str = "/var/lib/votal/nexus/policy.signed.json";
     const POLICY_VERSION_PATH: &str = "/var/lib/votal/nexus/policy.version";
     const HEALTH_PATH: &str = "/var/lib/votal/nexus/health.json";
+    const CONTAINMENT_DISABLE_PATH: &str =
+        "/var/lib/votal/nexus/disable-containment";
     // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
     const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
@@ -52,6 +55,7 @@ mod linux_agent {
 
         let started = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
+        let mut contained_pids = HashSet::new();
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         loop {
@@ -97,6 +101,7 @@ mod linux_agent {
                 &buffer[..read_count as usize],
                 policy.as_ref(),
                 &mut ransomware_tracker,
+                &mut contained_pids,
                 started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             )?;
         }
@@ -142,6 +147,7 @@ mod linux_agent {
         buffer: &[u8],
         policy: Option<&PolicyBundle>,
         ransomware_tracker: &mut RansomwareTracker,
+        contained_pids: &mut HashSet<u32>,
         now_ms: u64,
     ) -> io::Result<()> {
         let mut offset = 0usize;
@@ -216,6 +222,11 @@ mod linux_agent {
                         _ => None,
                     };
 
+                    let containment = execute_ransomware_response(
+                        ransomware_response.as_ref(),
+                        contained_pids,
+                    );
+
                     let _ = emit_event(
                         pid,
                         kind,
@@ -223,6 +234,7 @@ mod linux_agent {
                         policy,
                         ransomware,
                         ransomware_response,
+                        containment,
                     );
                 }
 
@@ -239,6 +251,47 @@ mod linux_agent {
         Ok(())
     }
 
+
+    fn execute_ransomware_response(
+        response: Option<&RansomwareResponseDecision>,
+        contained_pids: &mut HashSet<u32>,
+    ) -> Option<String> {
+        let response = response?;
+        if !response.matched || !response.enforce {
+            return None;
+        }
+
+        if response.action != RansomwareResponseAction::TerminateProcess {
+            return Some(format!(
+                "unsupported_enforcement_action:{:?}",
+                response.action
+            ));
+        }
+
+        if Path::new(CONTAINMENT_DISABLE_PATH).exists() {
+            return Some("containment_disabled_by_local_switch".to_string());
+        }
+
+        let pid = response.pid;
+        if pid <= 1 || pid == std::process::id() || pid > i32::MAX as u32 {
+            return Some(format!("refused_protected_pid:{pid}"));
+        }
+
+        if contained_pids.contains(&pid) {
+            return Some(format!("already_contained:{pid}"));
+        }
+
+        let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        if result != 0 {
+            return Some(format!(
+                "terminate_failed:{pid}:{}",
+                io::Error::last_os_error()
+            ));
+        }
+
+        contained_pids.insert(pid);
+        Some(format!("terminated_process:{pid}"))
+    }
 
     fn build_health(
         policy: Option<&PolicyBundle>,
@@ -386,6 +439,7 @@ mod linux_agent {
         policy: Option<&PolicyBundle>,
         ransomware: Option<RansomwareAssessment>,
         ransomware_response: Option<RansomwareResponseDecision>,
+        containment: Option<String>,
     ) -> io::Result<()> {
         let now = OffsetDateTime::now_utc();
         let timestamp = now
@@ -431,7 +485,8 @@ mod linux_agent {
                 "would_deny": decision.would_deny,
                 "enforcement": "shadow",
                 "ransomware": ransomware,
-                "ransomware_response": ransomware_response
+                "ransomware_response": ransomware_response,
+                "containment": containment
             })
         } else {
             serde_json::json!({
@@ -441,7 +496,8 @@ mod linux_agent {
                 "would_deny": false,
                 "enforcement": "telemetry_only",
                 "ransomware": ransomware,
-                "ransomware_response": ransomware_response
+                "ransomware_response": ransomware_response,
+                "containment": containment
             })
         };
         serde_json::to_writer(&mut file, &record)?;
