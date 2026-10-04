@@ -1,8 +1,6 @@
-use nexus_agent_core::{
-    AgentActionEvent, AgentActionKind, DecisionAction,
-};
+use nexus_agent_core::DecisionAction;
 use nexus_agent_runtime::{
-    authorize_action, read_secret_file, LocalAuthorizationTarget,
+    authorize_action, normalize_mcp_action, read_secret_file, LocalAuthorizationTarget,
 };
 use serde_json::Value;
 use std::{
@@ -10,16 +8,11 @@ use std::{
     io::{self, BufRead, BufReader, BufWriter, Read, Write},
     path::PathBuf,
     process::{Command, Stdio},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     thread,
 };
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 const MAX_MCP_FRAME_BYTES: usize = 4 * 1024 * 1024;
-static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UnavailableMode {
@@ -107,7 +100,12 @@ fn run() -> Result<(), String> {
             }
         };
 
-        let Some(action) = normalized_action(&config, &parsed) else {
+        let Some(action) = normalize_mcp_action(
+            &config.server_id,
+            &config.device_id,
+            &parsed,
+            "mcp-stdio",
+        ) else {
             child_stdin
                 .write_all(&frame)
                 .map_err(|error| format!("child stdin write failed: {error}"))?;
@@ -193,64 +191,6 @@ fn run() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-fn normalized_action(config: &Config, message: &Value) -> Option<AgentActionEvent> {
-    if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
-        return None;
-    }
-
-    let method = message.get("method").and_then(Value::as_str)?;
-    let params = message.get("params");
-
-    let (kind, tool_name, operation, resource) = match method {
-        "tools/call" => {
-            let name = params
-                .and_then(|value| value.get("name"))
-                .and_then(Value::as_str)?
-                .to_string();
-            (
-                AgentActionKind::McpToolCall,
-                Some(name),
-                "call".to_string(),
-                None,
-            )
-        }
-        "resources/read" => {
-            let uri = params
-                .and_then(|value| value.get("uri"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            (
-                AgentActionKind::McpResourceRead,
-                None,
-                "read".to_string(),
-                uri,
-            )
-        }
-        _ => return None,
-    };
-
-    let sequence = EVENT_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
-    let now = OffsetDateTime::now_utc();
-    let timestamp = now
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
-
-    Some(AgentActionEvent {
-        event_id: format!("mcp-proxy-{}-{sequence}", std::process::id()),
-        timestamp,
-        device_id: config.device_id.clone(),
-        pid: Some(std::process::id()),
-        agent_id: None,
-        session_id: None,
-        kind,
-        mcp_server: Some(config.server_id.clone()),
-        tool_name,
-        operation,
-        resource,
-        risk_tags: vec![],
-    })
 }
 
 fn write_denial(
@@ -477,7 +417,13 @@ mod tests {
             }
         });
 
-        let event = normalized_action(&config, &message).unwrap();
+        let event = normalize_mcp_action(
+            &config.server_id,
+            &config.device_id,
+            &message,
+            "test",
+        )
+        .unwrap();
         assert_eq!(event.tool_name.as_deref(), Some("write_file"));
         assert_eq!(event.operation, "call");
         assert!(event.resource.is_none());
@@ -505,7 +451,13 @@ mod tests {
             "params": {"uri": "file:///docs/manual.pdf"}
         });
 
-        let event = normalized_action(&config, &message).unwrap();
+        let event = normalize_mcp_action(
+            &config.server_id,
+            &config.device_id,
+            &message,
+            "test",
+        )
+        .unwrap();
         assert_eq!(event.kind, AgentActionKind::McpResourceRead);
         assert_eq!(
             event.resource.as_deref(),
