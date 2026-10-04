@@ -1,4 +1,5 @@
 #include <EndpointSecurity/EndpointSecurity.h>
+#include <bsm/libbsm.h>
 #include <dispatch/dispatch.h>
 #include <os/log.h>
 #include <pthread.h>
@@ -7,6 +8,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "NexusTrustRoot.h"
 #include "nexus_core.h"
@@ -19,6 +21,7 @@ static NexusPolicyHandle *g_policy = NULL;
 static pthread_rwlock_t g_policy_lock = PTHREAD_RWLOCK_INITIALIZER;
 static atomic_bool g_kill_switch = false;
 static atomic_bool g_reload_requested = false;
+static NexusRansomwareTrackerHandle *g_ransomware_tracker = NULL;
 
 static bool trust_root_configured(void) {
     for (size_t i = 0; i < sizeof(NEXUS_POLICY_PUBLIC_KEY); ++i) {
@@ -98,6 +101,14 @@ static NexusPolicyHandle *read_verified_policy(void) {
     return verified;
 }
 
+static uint64_t monotonic_ms(void) {
+    struct timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        return 0;
+    }
+    return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
+}
+
 static bool reload_verified_policy(void) {
     NexusPolicyHandle *verified = read_verified_policy();
     if (verified == NULL) {
@@ -106,10 +117,25 @@ static bool reload_verified_policy(void) {
         return false;
     }
 
+    uint64_t candidate_version = nexus_policy_version(verified);
+
     pthread_rwlock_wrlock(&g_policy_lock);
+    uint64_t current_version =
+        g_policy == NULL ? 0 : nexus_policy_version(g_policy);
+
+    if (current_version > 0 && candidate_version < current_version) {
+        pthread_rwlock_unlock(&g_policy_lock);
+        nexus_policy_free(verified);
+        os_log_error(g_log,
+                     "policy downgrade rejected current=%{public}llu candidate=%{public}llu",
+                     (unsigned long long)current_version,
+                     (unsigned long long)candidate_version);
+        return false;
+    }
+
     NexusPolicyHandle *previous = g_policy;
     g_policy = verified;
-    uint64_t version = nexus_policy_version(g_policy);
+    uint64_t version = candidate_version;
     pthread_rwlock_unlock(&g_policy_lock);
 
     if (previous != NULL) {
@@ -173,6 +199,68 @@ static void handle_auth_exec(es_client_t *client, const es_message_t *message) {
     }
 }
 
+static void observe_file_activity(const es_message_t *message) {
+    if (message == NULL || message->process == NULL || g_ransomware_tracker == NULL) {
+        return;
+    }
+
+    const es_file_t *file = NULL;
+    bool renamed = false;
+
+    switch (message->event_type) {
+        case ES_EVENT_TYPE_NOTIFY_WRITE:
+            file = message->event.write.target;
+            break;
+        case ES_EVENT_TYPE_NOTIFY_RENAME:
+            file = message->event.rename.source;
+            renamed = true;
+            break;
+        case ES_EVENT_TYPE_NOTIFY_UNLINK:
+            file = message->event.unlink.target;
+            break;
+        default:
+            return;
+    }
+
+    if (file == NULL || file->path.data == NULL || file->path.length == 0) {
+        return;
+    }
+
+    pid_t pid = audit_token_to_pid(message->process->audit_token);
+    NexusRansomwareAssessment assessment =
+        nexus_ransomware_observe_path(
+            g_ransomware_tracker,
+            (uint32_t)pid,
+            monotonic_ms(),
+            (const uint8_t *)file->path.data,
+            file->path.length,
+            renamed);
+
+    if (assessment.severity >= 2 && assessment.severity != 255) {
+        os_log_error(
+            g_log,
+            "ransomware_behavior pid=%{public}d score=%{public}u severity=%{public}u path=%{public}.*s",
+            pid,
+            assessment.score,
+            assessment.severity,
+            (int)file->path.length,
+            file->path.data);
+    }
+}
+
+static void handle_message(es_client_t *client, const es_message_t *message) {
+    if (message == NULL) {
+        return;
+    }
+
+    if (message->event_type == ES_EVENT_TYPE_AUTH_EXEC) {
+        handle_auth_exec(client, message);
+        return;
+    }
+
+    observe_file_activity(message);
+}
+
 int main(void) {
     g_log = os_log_create("ai.votal.nexus.agent.endpoint", "endpoint-security");
     signal(SIGUSR1, set_kill_switch);
@@ -186,10 +274,15 @@ int main(void) {
      */
     (void)reload_verified_policy();
 
+    g_ransomware_tracker = nexus_ransomware_tracker_new(5000, 4096);
+    if (g_ransomware_tracker == NULL) {
+        os_log_error(g_log, "ransomware tracker unavailable; continuing without behavior correlation");
+    }
+
     es_client_t *client = NULL;
     es_new_client_result_t result =
         es_new_client(&client, ^(es_client_t *callback_client, const es_message_t *message) {
-            handle_auth_exec(callback_client, message);
+            handle_message(callback_client, message);
         });
 
     if (result != ES_NEW_CLIENT_RESULT_SUCCESS) {
@@ -198,11 +291,23 @@ int main(void) {
             nexus_policy_free(g_policy);
             g_policy = NULL;
         }
+        if (g_ransomware_tracker != NULL) {
+            nexus_ransomware_tracker_free(g_ransomware_tracker);
+            g_ransomware_tracker = NULL;
+        }
         return EXIT_FAILURE;
     }
 
-    const es_event_type_t events[] = { ES_EVENT_TYPE_AUTH_EXEC };
-    if (es_subscribe(client, events, 1) != ES_RETURN_SUCCESS) {
+    const es_event_type_t events[] = {
+        ES_EVENT_TYPE_AUTH_EXEC,
+        ES_EVENT_TYPE_NOTIFY_WRITE,
+        ES_EVENT_TYPE_NOTIFY_RENAME,
+        ES_EVENT_TYPE_NOTIFY_UNLINK
+    };
+    if (es_subscribe(
+            client,
+            events,
+            sizeof(events) / sizeof(events[0])) != ES_RETURN_SUCCESS) {
         os_log_error(g_log, "es_subscribe failed");
         es_delete_client(client);
         if (g_policy != NULL) {
