@@ -2,7 +2,7 @@ use serde_json::Value;
 use std::{
     fs,
     io::{self, BufRead, BufReader, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -42,10 +42,12 @@ impl JsonlTailer {
         };
 
         let source_len = file.metadata()?.len();
-        let mut offset = self.read_offset()?.min(source_len);
-        if self.read_offset()?.is_some_and(|saved| saved > source_len) {
-            offset = 0;
-        }
+        let saved_offset = self.read_offset()?.unwrap_or(0);
+        let offset = if saved_offset > source_len {
+            0
+        } else {
+            saved_offset
+        };
 
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(offset))?;
