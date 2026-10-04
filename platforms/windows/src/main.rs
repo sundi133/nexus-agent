@@ -324,7 +324,7 @@ mod service {
 
     fn select_network_enforcement(
         policy: &PolicyBundle,
-    ) -> Result<Option<NetworkEnforcementPlan>, String> {
+    ) -> std::result::Result<Option<NetworkEnforcementPlan>, String> {
         if policy.mode != EnforcementMode::Enforce {
             return Ok(None);
         }
