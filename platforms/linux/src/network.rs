@@ -103,6 +103,16 @@ impl NftLease {
         Ok(())
     }
 
+    pub fn replace(&mut self, plans: Vec<NetworkPlan>) -> Result<(), String> {
+        if plans.is_empty() {
+            return Err("cannot replace nftables lease with an empty plan".to_string());
+        }
+        apply_plans(&plans)?;
+        self.plans = plans;
+        self.last_refresh = Instant::now();
+        Ok(())
+    }
+
     pub fn detail(&self) -> String {
         format!(
             "expiring nftables enforcement active destinations={} lease={}s refresh={}s",
@@ -113,20 +123,23 @@ impl NftLease {
     }
 
     fn refresh(&mut self) -> Result<(), String> {
-        let elements = self
-            .plans
-            .iter()
-            .map(|plan| format!("{} timeout {LEASE_SECONDS}s", plan.remote_ipv4))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let batch = format!(
-            "flush set {TABLE_FAMILY} {TABLE_NAME} {SET_NAME}\n             add element {TABLE_FAMILY} {TABLE_NAME} {SET_NAME} \
-             {{ {elements} }}\n"
-        );
-        run_nft_batch(&batch)?;
+        apply_plans(&self.plans)?;
         self.last_refresh = Instant::now();
         Ok(())
     }
+}
+
+fn apply_plans(plans: &[NetworkPlan]) -> Result<(), String> {
+    let elements = plans
+        .iter()
+        .map(|plan| format!("{} timeout {LEASE_SECONDS}s", plan.remote_ipv4))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let batch = format!(
+        "flush set {TABLE_FAMILY} {TABLE_NAME} {SET_NAME}\n         add element {TABLE_FAMILY} {TABLE_NAME} {SET_NAME} \
+         {{ {elements} }}\n"
+    );
+    run_nft_batch(&batch)
 }
 
 impl Drop for NftLease {
