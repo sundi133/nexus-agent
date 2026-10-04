@@ -1,5 +1,8 @@
-use crate::{DecisionAction, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope, verify_signed_policy};
-use std::{slice, str};
+use crate::{
+    verify_signed_policy, DecisionAction, DetectionConfig, EventKind, PolicyBundle,
+    RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
+};
+use std::{slice, str, sync::Mutex};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +17,19 @@ pub enum NexusDecision {
 pub struct NexusPolicyHandle {
     policy: PolicyBundle,
 }
+
+#[repr(C)]
+pub struct NexusRansomwareAssessment {
+    pub score: u8,
+    /// 0=low, 1=medium, 2=high, 3=critical, 255=error.
+    pub severity: u8,
+}
+
+#[repr(C)]
+pub struct NexusRansomwareTrackerHandle {
+    tracker: Mutex<RansomwareTracker>,
+}
+
 
 fn bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
     if ptr.is_null() {
@@ -99,6 +115,81 @@ pub extern "C" fn nexus_policy_evaluate_exec(
     }
 }
 
+#[no_mangle]
+pub extern "C" fn nexus_ransomware_tracker_new(
+    window_ms: u64,
+    max_processes: usize,
+) -> *mut NexusRansomwareTrackerHandle {
+    if window_ms == 0 || max_processes == 0 {
+        return std::ptr::null_mut();
+    }
+
+    let tracker = RansomwareTracker::new(DetectionConfig {
+        window_ms,
+        max_processes,
+    });
+
+    Box::into_raw(Box::new(NexusRansomwareTrackerHandle {
+        tracker: Mutex::new(tracker),
+    }))
+}
+
+#[no_mangle]
+pub extern "C" fn nexus_ransomware_tracker_free(
+    handle: *mut NexusRansomwareTrackerHandle,
+) {
+    if handle.is_null() {
+        return;
+    }
+    unsafe {
+        drop(Box::from_raw(handle));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nexus_ransomware_observe_path(
+    handle: *mut NexusRansomwareTrackerHandle,
+    pid: u32,
+    now_ms: u64,
+    path_ptr: *const u8,
+    path_len: usize,
+    renamed: bool,
+) -> NexusRansomwareAssessment {
+    let error = NexusRansomwareAssessment {
+        score: 0,
+        severity: 255,
+    };
+
+    if handle.is_null() {
+        return error;
+    }
+    let Some(path_bytes) = bytes(path_ptr, path_len) else {
+        return error;
+    };
+    let Ok(path) = str::from_utf8(path_bytes) else {
+        return error;
+    };
+
+    let handle = unsafe { &*handle };
+    let Ok(mut tracker) = handle.tracker.lock() else {
+        return error;
+    };
+    let assessment = tracker.observe_path(pid, now_ms, path, renamed);
+
+    let severity = match assessment.severity.as_str() {
+        "low" => 0,
+        "medium" => 1,
+        "high" => 2,
+        "critical" => 3,
+        _ => 255,
+    };
+
+    NexusRansomwareAssessment {
+        score: assessment.score,
+        severity,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +237,27 @@ mod tests {
         );
 
         nexus_policy_free(handle);
+    }
+
+    #[test]
+    fn ffi_ransomware_tracker_deduplicates_paths() {
+        let handle = nexus_ransomware_tracker_new(10_000, 16);
+        assert!(!handle.is_null());
+
+        let path = b"/tmp/a";
+        for now in 0..100 {
+            let assessment = nexus_ransomware_observe_path(
+                handle,
+                99,
+                now,
+                path.as_ptr(),
+                path.len(),
+                false,
+            );
+            assert_eq!(assessment.severity, 0);
+        }
+
+        nexus_ransomware_tracker_free(handle);
     }
 
     #[test]
