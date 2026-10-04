@@ -30,10 +30,10 @@ private struct ContentView: View {
                     Text(manager.status)
                         .textSelection(.enabled)
                     HStack {
-                        Button("Activate Extension") {
+                        Button("Activate Security Extensions") {
                             manager.activate()
                         }
-                        Button("Deactivate Extension") {
+                        Button("Deactivate Security Extensions") {
                             manager.deactivate()
                         }
                     }
@@ -66,7 +66,7 @@ private struct ContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text("Production deployments should use managed approval and signed policy rather than manually configured test rules.")
+            Text("Production deployments should use MDM approval, Developer ID signing, and signed policy rather than manually configured test rules.")
                 .font(.caption)
         }
         .padding(24)
