@@ -3,35 +3,51 @@ import SystemExtensions
 
 @MainActor
 final class SystemExtensionManager: NSObject, ObservableObject {
-    static let extensionIdentifier = "ai.votal.nexus.agent.endpoint"
+    static let endpointExtensionIdentifier = "ai.votal.nexus.agent.endpoint"
+    static let filterExtensionIdentifier = "ai.votal.nexus.agent.filter-data"
 
-    @Published private(set) var status = "Extension not requested"
+    private static let extensionIdentifiers = [
+        endpointExtensionIdentifier,
+        filterExtensionIdentifier,
+    ]
+
+    @Published private(set) var status = "Extensions not requested"
 
     func activate() {
-        status = "Requesting extension activation…"
-        let request = OSSystemExtensionRequest.activationRequest(
-            forExtensionWithIdentifier: Self.extensionIdentifier,
-            queue: .main
-        )
-        request.delegate = self
-        OSSystemExtensionManager.shared.submitRequest(request)
+        status = "Requesting security extension activation…"
+        submitRequests(activation: true)
     }
 
     func deactivate() {
-        status = "Requesting extension deactivation…"
-        let request = OSSystemExtensionRequest.deactivationRequest(
-            forExtensionWithIdentifier: Self.extensionIdentifier,
-            queue: .main
-        )
-        request.delegate = self
-        OSSystemExtensionManager.shared.submitRequest(request)
+        status = "Requesting security extension deactivation…"
+        submitRequests(activation: false)
+    }
+
+    private func submitRequests(activation: Bool) {
+        for identifier in Self.extensionIdentifiers {
+            let request: OSSystemExtensionRequest
+            if activation {
+                request = .activationRequest(
+                    forExtensionWithIdentifier: identifier,
+                    queue: .main
+                )
+            } else {
+                request = .deactivationRequest(
+                    forExtensionWithIdentifier: identifier,
+                    queue: .main
+                )
+            }
+
+            request.delegate = self
+            OSSystemExtensionManager.shared.submitRequest(request)
+        }
     }
 }
 
 extension SystemExtensionManager: OSSystemExtensionRequestDelegate {
     nonisolated func requestNeedsUserApproval(_ request: OSSystemExtensionRequest) {
         Task { @MainActor in
-            self.status = "Approval required in Privacy & Security"
+            self.status = "System extension approval required in Privacy & Security"
         }
     }
 
