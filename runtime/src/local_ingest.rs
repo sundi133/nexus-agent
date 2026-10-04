@@ -821,6 +821,21 @@ mod tests {
         assert_eq!(full, r"\\.\pipe\VotalNexusAgentActions");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unix_peer_identity_is_kernel_derived() {
+        let (left, _right) = UnixStream::pair().unwrap();
+        let peer = unix_peer_identity(&left).unwrap();
+        assert!(peer.uid.is_some());
+        assert!(peer.gid.is_some());
+        assert!(peer.transport.starts_with("unix_socket_"));
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(peer.pid, Some(std::process::id()));
+            assert!(peer.executable_path.is_some());
+        }
+    }
+
     #[test]
     fn validates_expected_agent_action_payload() {
         assert!(event().validate().is_ok());
