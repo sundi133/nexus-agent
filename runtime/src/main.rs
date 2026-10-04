@@ -94,6 +94,7 @@ fn run_runtime_loop(
         config.event_source_path.clone(),
         config.event_offset_path.clone(),
     );
+    let mut previous_cycle_errors: Vec<String> = Vec::new();
 
     loop {
         if shutdown_rx.is_some_and(|receiver| receiver.try_recv().is_ok()) {
@@ -113,8 +114,43 @@ fn run_runtime_loop(
             }
         }
 
-        let health = read_health(&config.health_source_path);
+        let mut health = read_health(&config.health_source_path);
+
+        if let Ok(stats) = worker.spool().stats() {
+            health = health.with_capability(
+                "managed_runtime_spool",
+                if stats.dropped_segments > 0 {
+                    CapabilityState::Fallback
+                } else {
+                    CapabilityState::Active
+                },
+                format!(
+                    "bytes={} segments={} dropped_segments={}",
+                    stats.bytes, stats.segments, stats.dropped_segments
+                ),
+            );
+        }
+
+        health = health.with_capability(
+            "managed_runtime_transport",
+            if previous_cycle_errors.is_empty() {
+                CapabilityState::Active
+            } else {
+                CapabilityState::Fallback
+            },
+            if previous_cycle_errors.is_empty() {
+                "previous control-plane cycle completed without transport/policy errors".to_string()
+            } else {
+                format!(
+                    "previous cycle errors: {}",
+                    previous_cycle_errors.join(" | ")
+                )
+            },
+        );
+
         let report = worker.run_once(&health);
+        previous_cycle_errors = report.errors.clone();
+
         if !report.errors.is_empty() {
             eprintln!(
                 "nexus-agent-runtime: cycle errors={}",
