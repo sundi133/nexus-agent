@@ -77,3 +77,29 @@ nexus-agent-runtime /etc/votal/nexus/runtime.json
 The policy public-key file contains only the pinned 32-byte Ed25519 public key encoded as base64. Protect the runtime configuration, trust-root file, bearer-token file, and state directory with platform ACLs.
 
 Telemetry ingestion is intentionally at-least-once. A crash between durable spooling and offset checkpointing may replay an event, but it should not lose one. The control plane should deduplicate by `event_id` where appropriate.
+
+
+## AI agent and MCP action ingest
+
+The runtime can optionally expose an authenticated loopback-only bridge for application-layer agent telemetry. This exists because endpoint process/file/network signals cannot reliably identify which MCP server or tool an AI agent invoked.
+
+Enable both fields together:
+
+```json
+{
+  "local_ingest_port": 8765,
+  "local_ingest_token_file": "/var/lib/votal/nexus/local-ingest.token"
+}
+```
+
+The listener always binds to `127.0.0.1`; the configuration cannot change the bind address. The local token is separate from the control-plane bearer token and should be a random 32+ character value protected by OS ACLs.
+
+Instrumented agent runtimes or MCP gateways can submit:
+
+```http
+POST /v1/agent-actions
+Authorization: Bearer <local-token>
+Content-Type: application/json
+```
+
+with the `agent-action-v1` schema. The default event records identity, MCP server/tool, operation, optional resource, and risk tags. It intentionally does **not** contain raw prompts or raw tool arguments. Accepted actions are written into the same durable spool and control-plane event stream as endpoint telemetry.
