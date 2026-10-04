@@ -41,6 +41,8 @@ pub struct LocalProducerConfig {
     pub expected_uid: Option<u32>,
     #[serde(default)]
     pub executable_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub executable_sha256: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,10 +136,18 @@ fn validate_local_producers(
             || producer.token_file.as_os_str().is_empty()
             || !ids.insert(producer.agent_id.as_str())
             || producer.executable_paths.len() > 16
+            || producer.executable_sha256.len() > 16
             || producer
                 .executable_paths
                 .iter()
                 .any(|path| path.as_os_str().is_empty())
+            || producer
+                .executable_sha256
+                .iter()
+                .any(|hash| {
+                    hash.len() != 64
+                        || !hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
         {
             return Err(ConfigError::InvalidLocalIngest);
         }
@@ -151,7 +161,11 @@ fn require_peer_constraints(
 ) -> Result<(), ConfigError> {
     if producers
         .iter()
-        .any(|producer| producer.expected_uid.is_none() && producer.executable_paths.is_empty())
+        .any(|producer| {
+            producer.expected_uid.is_none()
+                && producer.executable_paths.is_empty()
+                && producer.executable_sha256.is_empty()
+        })
     {
         return Err(ConfigError::InvalidLocalIngest);
     }
@@ -273,12 +287,14 @@ mod tests {
                 token_file: "agent-a.token".into(),
                 expected_uid: Some(1000),
                 executable_paths: vec!["/usr/local/bin/agent-a".into()],
+            executable_sha256: vec![],
             },
             LocalProducerConfig {
                 agent_id: "agent-b".into(),
                 token_file: "agent-b.token".into(),
                 expected_uid: None,
                 executable_paths: vec![],
+            executable_sha256: vec![],
             },
         ];
         assert!(cfg.validate().is_ok());
@@ -296,6 +312,7 @@ mod tests {
             token_file: "agent-a.token".into(),
             expected_uid: Some(1000),
             executable_paths: vec!["/usr/local/bin/agent-a".into()],
+        executable_sha256: vec![],
         }];
         assert!(cfg.validate().is_ok());
 
@@ -312,6 +329,7 @@ mod tests {
             token_file: "agent-a.token".into(),
             expected_uid: None,
             executable_paths: vec![],
+        executable_sha256: vec![],
         }];
         assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
     }
@@ -325,10 +343,25 @@ mod tests {
             token_file: "agent-a.token".into(),
             expected_uid: None,
             executable_paths: vec![r"C:\Program Files\Agent\agent.exe".into()],
+        executable_sha256: vec![],
         }];
         assert!(cfg.validate().is_ok());
 
         cfg.local_ingest_port = Some(8765);
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
+    }
+
+    #[test]
+    fn rejects_invalid_executable_hash_pin() {
+        let mut cfg = config();
+        cfg.local_ingest_pipe_name = Some("VotalNexusAgentActions".into());
+        cfg.local_ingest_producers = vec![LocalProducerConfig {
+            agent_id: "agent-a".into(),
+            token_file: "agent-a.token".into(),
+            expected_uid: None,
+            executable_paths: vec![],
+            executable_sha256: vec!["not-a-sha256".into()],
+        }];
         assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
     }
 
