@@ -758,9 +758,17 @@ int main(void) {
                               NSEC_PER_SEC,
                               100 * NSEC_PER_MSEC);
     dispatch_source_set_event_handler(reload_timer, ^{
-        if (atomic_exchange_explicit(&g_reload_requested,
-                                     false,
-                                     memory_order_relaxed)) {
+        bool requested = atomic_exchange_explicit(&g_reload_requested,
+                                                  false,
+                                                  memory_order_relaxed);
+        uint64_t disk_version = read_policy_watermark();
+
+        pthread_rwlock_rdlock(&g_policy_lock);
+        uint64_t active_version =
+            g_policy == NULL ? 0 : nexus_policy_version(g_policy);
+        pthread_rwlock_unlock(&g_policy_lock);
+
+        if (requested || (disk_version > 0 && disk_version > active_version)) {
             (void)reload_verified_policy();
             write_health_file();
         }
@@ -774,7 +782,7 @@ int main(void) {
     write_health_file();
 
     os_log(g_log,
-           "Nexus Endpoint Security extension started; policy_loaded=%{public}s; SIGHUP reloads policy",
+           "Nexus Endpoint Security extension started; policy_loaded=%{public}s; signed policy watermark is checked every second; SIGHUP forces a reload check",
            policy_loaded ? "true" : "false");
     dispatch_main();
     return EXIT_SUCCESS;
