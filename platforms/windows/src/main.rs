@@ -120,14 +120,14 @@ mod service {
             process_id: None,
         })?;
 
-        let policy = load_verified_policy();
+        let mut policy = load_verified_policy();
         let _ = write_diagnostic(if policy.is_some() {
             "signed policy verified; process enforcement is shadow-only and supported network rules may be enforced dynamically"
         } else {
             "no verified policy loaded; telemetry-only"
         });
 
-        let (network_session, network_state, network_detail) =
+        let (mut network_session, mut network_state, mut network_detail) =
             configure_network_enforcement(policy.as_ref());
 
         let (file_tx, file_rx) = mpsc::channel();
@@ -159,7 +159,17 @@ mod service {
                     &file_detail,
                 );
                 let _ = write_health(&health);
-                run_etw_loop(&shutdown_rx, &etw_rx, &file_rx, policy.as_ref());
+                run_etw_loop(
+                    &shutdown_rx,
+                    &etw_rx,
+                    &file_rx,
+                    &mut policy,
+                    &mut network_session,
+                    &mut network_state,
+                    &mut network_detail,
+                    file_state,
+                    &file_detail,
+                );
             }
             Err(error) => {
                 let detail = format!("ETW unavailable; Tool Help polling fallback: {error}");
@@ -174,7 +184,18 @@ mod service {
                     &file_detail,
                 );
                 let _ = write_health(&health);
-                run_snapshot_loop(&shutdown_rx, &file_rx, policy.as_ref());
+                run_snapshot_loop(
+                    &shutdown_rx,
+                    &file_rx,
+                    &mut policy,
+                    &mut network_session,
+                    &mut network_state,
+                    &mut network_detail,
+                    file_state,
+                    &file_detail,
+                    CapabilityState::Fallback,
+                    &detail,
+                );
             }
         }
 
@@ -198,16 +219,34 @@ mod service {
         shutdown_rx: &mpsc::Receiver<()>,
         etw_rx: &mpsc::Receiver<EtwProcessStart>,
         file_rx: &mpsc::Receiver<EtwFileActivity>,
-        policy: Option<&PolicyBundle>,
+        policy: &mut Option<PolicyBundle>,
+        network_session: &mut Option<WfpSession>,
+        network_state: &mut CapabilityState,
+        network_detail: &mut String,
+        file_state: CapabilityState,
+        file_detail: &str,
     ) {
         let started = Instant::now();
+        let mut last_policy_check = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
         let mut contained_pids = HashSet::new();
 
         loop {
+            maybe_reload_policy(
+                policy,
+                network_session,
+                network_state,
+                network_detail,
+                &mut last_policy_check,
+                CapabilityState::Active,
+                "ETW Microsoft-Windows-Kernel-Process",
+                file_state,
+                file_detail,
+            );
+
             drain_file_activity(
                 file_rx,
-                policy,
+                policy.as_ref(),
                 &mut ransomware_tracker,
                 &mut contained_pids,
                 started.elapsed().as_millis().min(u64::MAX as u128) as u64,
@@ -226,14 +265,14 @@ mod service {
                     let full_path = query_process_path(process.pid)
                         .unwrap_or_else(|| process.image_name.clone());
                     mark_suspicious_if_policy_would_deny(
-                        policy,
+                        policy.as_ref(),
                         &mut ransomware_tracker,
                         process.pid,
                         Some(process.parent_pid),
                         &full_path,
                         started.elapsed().as_millis().min(u64::MAX as u128) as u64,
                     );
-                    let _ = emit_process_start(&process, full_path, policy);
+                    let _ = emit_process_start(&process, full_path, policy.as_ref());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
@@ -247,17 +286,37 @@ mod service {
     fn run_snapshot_loop(
         shutdown_rx: &mpsc::Receiver<()>,
         file_rx: &mpsc::Receiver<EtwFileActivity>,
-        policy: Option<&PolicyBundle>,
+        policy: &mut Option<PolicyBundle>,
+        network_session: &mut Option<WfpSession>,
+        network_state: &mut CapabilityState,
+        network_detail: &mut String,
+        file_state: CapabilityState,
+        file_detail: &str,
+        telemetry_state: CapabilityState,
+        telemetry_detail: &str,
     ) {
         let mut known = snapshot_processes().unwrap_or_default();
         let started = Instant::now();
+        let mut last_policy_check = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
         let mut contained_pids = HashSet::new();
 
         loop {
+            maybe_reload_policy(
+                policy,
+                network_session,
+                network_state,
+                network_detail,
+                &mut last_policy_check,
+                telemetry_state,
+                telemetry_detail,
+                file_state,
+                file_detail,
+            );
+
             drain_file_activity(
                 file_rx,
-                policy,
+                policy.as_ref(),
                 &mut ransomware_tracker,
                 &mut contained_pids,
                 started.elapsed().as_millis().min(u64::MAX as u128) as u64,
@@ -274,14 +333,14 @@ mod service {
                             let full_path = query_process_path(*pid)
                                 .unwrap_or_else(|| process.image_name.clone());
                             mark_suspicious_if_policy_would_deny(
-                                policy,
+                                policy.as_ref(),
                                 &mut ransomware_tracker,
                                 *pid,
                                 Some(process.parent_pid),
                                 &full_path,
                                 started.elapsed().as_millis().min(u64::MAX as u128) as u64,
                             );
-                            let _ = emit_process_start(process, full_path, policy);
+                            let _ = emit_process_start(process, full_path, policy.as_ref());
                         }
                     }
                     known = current;
@@ -291,6 +350,53 @@ mod service {
                 }
             }
         }
+    }
+
+    fn maybe_reload_policy(
+        policy: &mut Option<PolicyBundle>,
+        network_session: &mut Option<WfpSession>,
+        network_state: &mut CapabilityState,
+        network_detail: &mut String,
+        last_policy_check: &mut Instant,
+        telemetry_state: CapabilityState,
+        telemetry_detail: &str,
+        file_state: CapabilityState,
+        file_detail: &str,
+    ) {
+        if last_policy_check.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        *last_policy_check = Instant::now();
+
+        let Some(candidate) = load_newer_verified_policy(
+            policy.as_ref().map(|value| value.version),
+        ) else {
+            return;
+        };
+
+        let (candidate_session, candidate_state, candidate_detail) =
+            configure_network_enforcement(Some(&candidate));
+
+        *network_session = candidate_session;
+        *network_state = candidate_state;
+        *network_detail = candidate_detail;
+        *policy = Some(candidate);
+
+        let _ = write_health(&build_health(
+            policy.as_ref(),
+            telemetry_state,
+            telemetry_detail,
+            *network_state,
+            network_detail,
+            file_state,
+            file_detail,
+        ));
+
+        let _ = write_diagnostic(&format!(
+            "activated policy version={} network_state={:?}",
+            policy.as_ref().map(|value| value.version).unwrap_or_default(),
+            network_state,
+        ));
     }
 
     fn drain_file_activity(
@@ -772,6 +878,25 @@ mod service {
         serde_json::to_writer_pretty(&mut file, health)?;
         file.write_all(b"\n")?;
         Ok(())
+    }
+
+    fn policy_watermark() -> Option<u64> {
+        std::fs::read_to_string(POLICY_VERSION_PATH)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    }
+
+    fn load_newer_verified_policy(current_version: Option<u64>) -> Option<PolicyBundle> {
+        let disk_version = policy_watermark()?;
+        if current_version.is_some_and(|current| disk_version <= current) {
+            return None;
+        }
+
+        let candidate = load_verified_policy()?;
+        if candidate.version != disk_version {
+            return None;
+        }
+        Some(candidate)
     }
 
     fn load_verified_policy() -> Option<PolicyBundle> {
