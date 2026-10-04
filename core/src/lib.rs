@@ -127,7 +127,7 @@ pub struct RansomwareFeatures {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RansomwareAssessment {
     pub score: u8,
-    pub severity: &'static str,
+    pub severity: String,
     pub reasons: Vec<String>,
 }
 
@@ -160,7 +160,7 @@ pub fn assess_ransomware(features: &RansomwareFeatures) -> RansomwareAssessment 
 
     RansomwareAssessment {
         score,
-        severity,
+        severity: severity.to_string(),
         reasons,
     }
 }
