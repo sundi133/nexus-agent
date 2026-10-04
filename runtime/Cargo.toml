@@ -20,3 +20,6 @@ tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.8.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
