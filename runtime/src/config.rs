@@ -21,12 +21,20 @@ pub struct RuntimeConfig {
     pub health_source_path: PathBuf,
     pub local_ingest_port: Option<u16>,
     pub local_ingest_token_file: Option<PathBuf>,
+    #[serde(default)]
+    pub local_ingest_producers: Vec<LocalProducerConfig>,
     #[serde(default = "default_cycle_interval_ms")]
     pub cycle_interval_ms: u64,
     #[serde(default = "default_spool_max_bytes")]
     pub spool_max_bytes: u64,
     #[serde(default = "default_segment_max_bytes")]
     pub segment_max_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalProducerConfig {
+    pub agent_id: String,
+    pub token_file: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,8 +77,27 @@ impl RuntimeConfig {
         }
 
         match (&self.local_ingest_port, &self.local_ingest_token_file) {
-            (None, None) => {}
-            (Some(port), Some(path)) if *port >= 1024 && !path.as_os_str().is_empty() => {}
+            (None, None) if self.local_ingest_producers.is_empty() => {}
+            (Some(port), Some(path))
+                if *port >= 1024
+                    && !path.as_os_str().is_empty()
+                    && self.local_ingest_producers.is_empty() => {}
+            (Some(port), None)
+                if *port >= 1024 && !self.local_ingest_producers.is_empty() => {
+                    if self.local_ingest_producers.len() > 64 {
+                        return Err(ConfigError::InvalidLocalIngest);
+                    }
+                    let mut ids = std::collections::HashSet::new();
+                    for producer in &self.local_ingest_producers {
+                        if producer.agent_id.is_empty()
+                            || producer.agent_id.len() > 256
+                            || producer.token_file.as_os_str().is_empty()
+                            || !ids.insert(producer.agent_id.as_str())
+                        {
+                            return Err(ConfigError::InvalidLocalIngest);
+                        }
+                    }
+                }
             _ => return Err(ConfigError::InvalidLocalIngest),
         }
 
@@ -141,6 +168,7 @@ mod tests {
             health_source_path: "health.json".into(),
             local_ingest_port: None,
             local_ingest_token_file: None,
+            local_ingest_producers: vec![],
             cycle_interval_ms: 1000,
             spool_max_bytes: 1024,
             segment_max_bytes: 256,
@@ -177,6 +205,26 @@ mod tests {
         assert!(cfg.validate().is_ok());
 
         cfg.local_ingest_port = Some(80);
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
+    }
+
+    #[test]
+    fn validates_bound_local_producers() {
+        let mut cfg = config();
+        cfg.local_ingest_port = Some(8765);
+        cfg.local_ingest_producers = vec![
+            LocalProducerConfig {
+                agent_id: "agent-a".into(),
+                token_file: "agent-a.token".into(),
+            },
+            LocalProducerConfig {
+                agent_id: "agent-b".into(),
+                token_file: "agent-b.token".into(),
+            },
+        ];
+        assert!(cfg.validate().is_ok());
+
+        cfg.local_ingest_producers[1].agent_id = "agent-a".into();
         assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
     }
 
