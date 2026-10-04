@@ -544,6 +544,10 @@ impl RansomwareTracker {
     pub fn tracked_processes(&self) -> usize {
         self.windows.len()
     }
+
+    pub fn features_for(&self, pid: u32) -> Option<RansomwareFeatures> {
+        self.windows.get(&pid).map(ProcessWindow::features)
+    }
 }
 
 pub fn plan_ransomware_response(
@@ -946,6 +950,17 @@ mod tests {
             tracker.observe(7, now, true);
         }
         assert!(tracker.observe(7, 500, false).score < 60);
+    }
+
+    #[test]
+    fn suspicious_process_context_is_exposed_in_features() {
+        let mut tracker = RansomwareTracker::new(DetectionConfig {
+            window_ms: 10_000,
+            max_processes: 8,
+        });
+        tracker.mark_suspicious_process(77, 10);
+        let features = tracker.features_for(77).unwrap();
+        assert!(features.suspicious_process_context);
     }
 
     #[test]
