@@ -902,6 +902,7 @@ mod tests {
                 executable_paths: vec!["/tmp/test-malware".into()],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         }
     }
@@ -928,6 +929,7 @@ mod tests {
                 executable_paths: vec![],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         assert_eq!(
@@ -1016,6 +1018,7 @@ mod tests {
                 executable_paths: vec!["/opt/test-client".into()],
                 destination_hosts: vec!["blocked.example".into()],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
 
@@ -1043,6 +1046,7 @@ mod tests {
                 executable_paths: vec![],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         assert_eq!(policy.evaluate(&event()).action, DecisionAction::Allow);
@@ -1060,6 +1064,7 @@ mod tests {
                 executable_paths: vec![],
                 destination_hosts: vec!["bad.example".into()],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         let mut event = event();
@@ -1270,6 +1275,7 @@ mod tests {
             version: 1,
             mode: EnforcementMode::Enforce,
             rules: vec![],
+            agent_action_rules: vec![],
             ransomware_response: Some(RansomwareResponsePolicy {
                 mode: ResponseMode::Enforce,
                 action: RansomwareResponseAction::TerminateProcess,
@@ -1290,6 +1296,7 @@ mod tests {
             version: 1,
             mode: EnforcementMode::Enforce,
             rules: vec![],
+            agent_action_rules: vec![],
             ransomware_response: Some(RansomwareResponsePolicy {
                 mode: ResponseMode::Shadow,
                 action: RansomwareResponseAction::TerminateProcess,
@@ -1318,6 +1325,7 @@ mod tests {
             version: 1,
             mode: EnforcementMode::Enforce,
             rules: vec![],
+            agent_action_rules: vec![],
             ransomware_response: Some(RansomwareResponsePolicy {
                 mode: ResponseMode::Enforce,
                 action: RansomwareResponseAction::TerminateProcess,
