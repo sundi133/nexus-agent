@@ -67,6 +67,10 @@
             "bearer_token_file"
           ],
           "properties": {
+            "bearer_token_file": {
+              "type": "string",
+              "minLength": 1
+            },
             "device_credential_file": {
               "type": "null"
             }
@@ -79,6 +83,10 @@
           "properties": {
             "bearer_token_file": {
               "type": "null"
+            },
+            "device_credential_file": {
+              "type": "string",
+              "minLength": 1
             }
           }
         }
