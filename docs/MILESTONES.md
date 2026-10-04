@@ -103,7 +103,7 @@ Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS de
 
 
 ## M8 — AI agent / MCP action telemetry
-Status: normalized event model, authenticated localhost bridge, signed MCP/tool/action selectors, synchronous local allow/alert/deny decisions, decision audit spooling, and hot policy refresh are implemented. Producer-side integrations and stronger producer identity/attestation remain.
+Status: normalized event model, authenticated localhost bridge, signed MCP/tool/action selectors, synchronous local allow/alert/deny decisions, decision audit spooling, hot policy refresh, generic stdio enforcement, and Streamable HTTP enforcement are implemented. SDK-native integrations and platform publisher/code-signature identity remain.
 
 - normalized `AgentActionEvent` for MCP tool calls, resource reads, agent commands, browser actions, network requests, and file operations
 - strict size/cardinality validation and JSON schema
@@ -120,7 +120,9 @@ Status: normalized event model, authenticated localhost bridge, signed MCP/tool/
 - Windows named-pipe client PID/executable attestation
 - executable SHA-256 pinning on Linux, macOS, and Windows attested producer paths
 - generic MCP stdio enforcement proxy for `tools/call` and `resources/read`, fail-closed by default
-- remaining: macOS code-signature identity, Windows publisher/AuthentiCode identity, Streamable HTTP/SDK-native MCP adapters, and broader agent-runtime integrations
+- Streamable HTTP reverse proxy with local authorization before upstream forwarding and streaming response support
+- end-to-end tests proving denied tool calls do not reach the upstream MCP server
+- remaining: macOS code-signature identity, Windows publisher/AuthentiCode identity, SDK-native MCP adapters, and broader agent-runtime integrations
 
 
 ## Live policy/control-plane status
