@@ -10,9 +10,9 @@ fn main() {
 mod linux_agent {
     use crate::network::{select_network_plan, NftLease};
     use nexus_agent_core::{
-        verify_signed_policy, AgentHealth, CapabilityState, DetectionConfig, EventKind,
-        PolicyBundle, RansomwareAssessment, RansomwareTracker, SecurityEvent,
-        SignedPolicyEnvelope,
+        plan_ransomware_response, verify_signed_policy, AgentHealth, CapabilityState,
+        DetectionConfig, EventKind, PolicyBundle, RansomwareAssessment,
+        RansomwareResponseDecision, RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
     };
     use std::{
         ffi::CString,
