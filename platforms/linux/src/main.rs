@@ -1,3 +1,6 @@
+#[cfg(target_os = "linux")]
+mod network;
+
 #[cfg(not(target_os = "linux"))]
 fn main() {
     eprintln!("nexus-agent-linux is only supported on Linux");
@@ -5,6 +8,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux_agent {
+    use crate::network::{select_network_plan, NftLease};
     use nexus_agent_core::{
         verify_signed_policy, AgentHealth, CapabilityState, DetectionConfig, EventKind,
         PolicyBundle, RansomwareAssessment, RansomwareTracker, SecurityEvent,
@@ -32,17 +36,40 @@ mod linux_agent {
     pub fn run() -> io::Result<()> {
         let fan_fd = fanotify_start("/")?;
         let policy = load_verified_policy();
+        let (mut network_lease, mut network_state, mut network_detail) =
+            configure_network_enforcement(policy.as_ref());
+
         eprintln!(
-            "nexus-agent-linux: fanotify audit collector active on /; policy_loaded={}; enforcement=shadow",
-            policy.is_some()
+            "nexus-agent-linux: fanotify audit collector active on /; policy_loaded={}; network_state={:?}",
+            policy.is_some(),
+            network_state,
         );
-        let _ = write_health(&build_health(policy.as_ref()));
+        let _ = write_health(&build_health(
+            policy.as_ref(),
+            network_state,
+            &network_detail,
+        ));
 
         let started = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         loop {
+            let refresh_error = network_lease
+                .as_mut()
+                .and_then(|lease| lease.refresh_if_due().err());
+
+            if let Some(error) = refresh_error {
+                network_lease.take();
+                network_state = CapabilityState::Unavailable;
+                network_detail = format!("nftables lease refresh failed: {error}");
+                let _ = write_health(&build_health(
+                    policy.as_ref(),
+                    network_state,
+                    &network_detail,
+                ));
+            }
+
             let read_count = unsafe {
                 libc::read(
                     fan_fd,
@@ -182,7 +209,11 @@ mod linux_agent {
     }
 
 
-    fn build_health(policy: Option<&PolicyBundle>) -> AgentHealth {
+    fn build_health(
+        policy: Option<&PolicyBundle>,
+        network_state: CapabilityState,
+        network_detail: &str,
+    ) -> AgentHealth {
         let policy_version = policy.map(|policy| policy.version);
         AgentHealth::new("linux", policy_version)
             .with_capability(
@@ -209,6 +240,11 @@ mod linux_agent {
                 "unique-path close-write correlation enabled; detection only, no process termination",
             )
             .with_capability(
+                "network_enforcement",
+                network_state,
+                network_detail,
+            )
+            .with_capability(
                 "execution_policy",
                 if policy.is_some() {
                     CapabilityState::Shadow
@@ -221,6 +257,43 @@ mod linux_agent {
                     "no verified policy; execution enforcement unavailable"
                 },
             )
+    }
+
+    fn configure_network_enforcement(
+        policy: Option<&PolicyBundle>,
+    ) -> (Option<NftLease>, CapabilityState, String) {
+        let Some(policy) = policy else {
+            return (
+                None,
+                CapabilityState::Unavailable,
+                "no verified signed policy; nftables runtime rule not installed".to_string(),
+            );
+        };
+
+        match select_network_plan(policy) {
+            Ok(None) => (
+                None,
+                CapabilityState::Shadow,
+                if policy.mode == nexus_agent_core::EnforcementMode::Audit {
+                    "policy is audit mode; nftables runtime rule intentionally not installed"
+                        .to_string()
+                } else {
+                    "no supported exact-IPv4 deny network rule configured".to_string()
+                },
+            ),
+            Err(detail) => (None, CapabilityState::Shadow, detail),
+            Ok(Some(plan)) => match NftLease::start(plan) {
+                Ok(lease) => {
+                    let detail = lease.detail();
+                    (Some(lease), CapabilityState::Active, detail)
+                }
+                Err(error) => (
+                    None,
+                    CapabilityState::Unavailable,
+                    format!("cannot activate nftables lease: {error}"),
+                ),
+            },
+        }
     }
 
     fn write_health(health: &AgentHealth) -> io::Result<()> {
