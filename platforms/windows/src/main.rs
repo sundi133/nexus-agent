@@ -48,6 +48,7 @@ mod service {
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
     const EVENT_LOG_PATH: &str = r"C:\ProgramData\Votal\Nexus\events.jsonl";
     const POLICY_PATH: &str = r"C:\ProgramData\Votal\Nexus\policy.signed.json";
+    const HEALTH_PATH: &str = r"C:\ProgramData\Votal\Nexus\health.json";
     // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
     const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
