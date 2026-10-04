@@ -374,8 +374,30 @@ mod service {
             return;
         };
 
+        let candidate_version = candidate.version;
         let (candidate_session, candidate_state, candidate_detail) =
             configure_network_enforcement(Some(&candidate));
+
+        if candidate_state == CapabilityState::Unavailable
+            && network_session.is_some()
+        {
+            *network_detail = format!(
+                "last-known-good WFP enforcement retained; candidate policy version={} not activated: {}",
+                candidate_version,
+                candidate_detail,
+            );
+            let _ = write_health(&build_health(
+                policy.as_ref(),
+                telemetry_state,
+                telemetry_detail,
+                *network_state,
+                network_detail,
+                file_state,
+                file_detail,
+            ));
+            let _ = write_diagnostic(network_detail);
+            return;
+        }
 
         *network_session = candidate_session;
         *network_state = candidate_state;
