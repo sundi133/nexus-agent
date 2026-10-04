@@ -103,3 +103,12 @@ Content-Type: application/json
 ```
 
 with the `agent-action-v1` schema. The default event records identity, MCP server/tool, operation, optional resource, and risk tags. It intentionally does **not** contain raw prompts or raw tool arguments. Accepted actions are written into the same durable spool and control-plane event stream as endpoint telemetry.
+
+
+## Trust-root and reload contract
+
+The runtime's `policy_public_key_file` is a base64 encoding of the raw 32-byte Ed25519 public key. Platform installers place this file in a root/administrator-controlled configuration directory. Privileged platform agents read the same public key when verifying the signed policy snapshot.
+
+Policy versions are immutable. Re-fetching byte-identical signed content at the current version is idempotent; a different signed policy attempting to reuse the current version is rejected. New behavior must use a strictly newer version.
+
+The runtime writes the verified signed envelope before advancing `policy.version`. Platform agents watch that watermark and activate only a matching verified policy, preserving last-known-good policy/native enforcement when staging fails.
