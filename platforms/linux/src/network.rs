@@ -1,5 +1,6 @@
 use nexus_agent_core::{DecisionAction, EnforcementMode, PolicyBundle};
 use std::{
+    collections::HashSet,
     io::Write,
     net::Ipv4Addr,
     process::{Command, Stdio},
@@ -20,58 +21,58 @@ pub struct NetworkPlan {
 
 pub fn select_network_plan(
     policy: &PolicyBundle,
-) -> Result<Option<NetworkPlan>, String> {
+) -> Result<Vec<NetworkPlan>, String> {
     if policy.mode != EnforcementMode::Enforce {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
-    let mut candidates = policy.rules.iter().filter(|rule| {
+    let mut plans = Vec::new();
+    let mut seen = HashSet::new();
+
+    for rule in policy.rules.iter().filter(|rule| {
         rule.action == DecisionAction::Deny && !rule.destination_hosts.is_empty()
-    });
+    }) {
+        if !rule.executable_paths.is_empty() {
+            return Err(format!(
+                "Linux nftables cannot faithfully enforce executable-scoped network rule {}",
+                rule.id
+            ));
+        }
 
-    let Some(rule) = candidates.next() else {
-        return Ok(None);
-    };
+        for destination in &rule.destination_hosts {
+            let remote_ipv4 = destination.parse::<Ipv4Addr>().map_err(|_| {
+                format!(
+                    "Linux nftables requires exact IPv4 destinations; rule {} contains {}",
+                    rule.id, destination
+                )
+            })?;
 
-    if candidates.next().is_some() {
-        return Err(
-            "multiple deny network rules are not yet representable by the Linux nftables adapter"
-                .to_string(),
-        );
+            if seen.insert(remote_ipv4) {
+                plans.push(NetworkPlan {
+                    rule_id: rule.id.clone(),
+                    remote_ipv4,
+                });
+            }
+        }
     }
 
-    if rule.destination_hosts.len() != 1 {
-        return Err(
-            "Linux nftables enforcement requires exactly one destination".to_string(),
-        );
+    if plans.len() > 256 {
+        return Err("expanded Linux network policy exceeds 256 exact IPv4 destinations".to_string());
     }
 
-    if !rule.executable_paths.is_empty() {
-        return Err(
-            "Linux nftables baseline cannot faithfully enforce executable-scoped network rules"
-                .to_string(),
-        );
-    }
-
-    let remote_ipv4 = rule.destination_hosts[0]
-        .parse::<Ipv4Addr>()
-        .map_err(|_| {
-            "Linux nftables baseline currently requires an exact IPv4 destination".to_string()
-        })?;
-
-    Ok(Some(NetworkPlan {
-        rule_id: rule.id.clone(),
-        remote_ipv4,
-    }))
+    Ok(plans)
 }
 
 pub struct NftLease {
-    plan: NetworkPlan,
+    plans: Vec<NetworkPlan>,
     last_refresh: Instant,
 }
 
 impl NftLease {
-    pub fn start(plan: NetworkPlan) -> Result<Self, String> {
+    pub fn start(plans: Vec<NetworkPlan>) -> Result<Self, String> {
+        if plans.is_empty() {
+            return Err("cannot start nftables lease without destinations".to_string());
+        }
         ensure_nft_available()?;
         remove_runtime_table();
 
@@ -83,7 +84,7 @@ impl NftLease {
         run_nft_batch(&setup)?;
 
         let mut lease = Self {
-            plan,
+            plans,
             last_refresh: Instant::now() - Duration::from_secs(REFRESH_SECONDS),
         };
 
@@ -104,19 +105,23 @@ impl NftLease {
 
     pub fn detail(&self) -> String {
         format!(
-            "expiring nftables block active rule={} remote_ipv4={} lease={}s refresh={}s",
-            self.plan.rule_id,
-            self.plan.remote_ipv4,
+            "expiring nftables enforcement active destinations={} lease={}s refresh={}s",
+            self.plans.len(),
             LEASE_SECONDS,
             REFRESH_SECONDS,
         )
     }
 
     fn refresh(&mut self) -> Result<(), String> {
+        let elements = self
+            .plans
+            .iter()
+            .map(|plan| format!("{} timeout {LEASE_SECONDS}s", plan.remote_ipv4))
+            .collect::<Vec<_>>()
+            .join(", ");
         let batch = format!(
             "flush set {TABLE_FAMILY} {TABLE_NAME} {SET_NAME}\n             add element {TABLE_FAMILY} {TABLE_NAME} {SET_NAME} \
-             {{ {} timeout {LEASE_SECONDS}s }}\n",
-            self.plan.remote_ipv4
+             {{ {elements} }}\n"
         );
         run_nft_batch(&batch)?;
         self.last_refresh = Instant::now();
@@ -221,15 +226,36 @@ mod tests {
 
     #[test]
     fn exact_ipv4_builds_plan() {
-        let plan = select_network_plan(&policy(
+        let plans = select_network_plan(&policy(
             EnforcementMode::Enforce,
             vec!["203.0.113.10"],
             vec![],
         ))
-        .unwrap()
         .unwrap();
 
-        assert_eq!(plan.remote_ipv4, "203.0.113.10".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(plans.len(), 1);
+        assert_eq!(
+            plans[0].remote_ipv4,
+            "203.0.113.10".parse::<Ipv4Addr>().unwrap()
+        );
+    }
+
+    #[test]
+    fn multiple_exact_ipv4_destinations_build_multiple_plans() {
+        let plans = select_network_plan(&policy(
+            EnforcementMode::Enforce,
+            vec!["203.0.113.10", "203.0.113.11"],
+            vec![],
+        ))
+        .unwrap();
+
+        assert_eq!(plans.len(), 2);
+        assert!(plans.iter().any(|plan|
+            plan.remote_ipv4 == "203.0.113.10".parse::<Ipv4Addr>().unwrap()
+        ));
+        assert!(plans.iter().any(|plan|
+            plan.remote_ipv4 == "203.0.113.11".parse::<Ipv4Addr>().unwrap()
+        ));
     }
 
     #[test]
