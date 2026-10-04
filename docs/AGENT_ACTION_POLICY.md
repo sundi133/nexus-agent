@@ -208,3 +208,22 @@ When `executable_sha256` is configured, at least one configured digest must matc
 On Linux, Nexus hashes `/proc/<peer-pid>/exe`, which follows the executable image of the running peer process rather than merely reopening the configured pathname. On Windows, Nexus hashes the executable resolved from the named-pipe client PID. On macOS, executable hashing is unavailable until peer PID/process identity is added, so a macOS producer configured with a hash pin will fail authentication instead of silently skipping the check.
 
 The verified digest is included in the producer-attestation audit record.
+
+
+## Producer authorization CLI
+
+The runtime package includes `nexus-agent-action` for integration and smoke testing. It reads a normalized action event and the producer token, calls the local bridge, prints the decision JSON, and returns exit `0` for allow, `10` for alert, `20` for deny, and `1` for bridge/protocol/configuration failure.
+
+Unix socket example:
+
+```sh
+cargo run --manifest-path runtime/Cargo.toml --bin nexus-agent-action -- --event action.json --token-file /var/lib/votal/nexus/producers/coding-agent.token --unix /run/votal/nexus/agent-actions.sock
+```
+
+Windows named-pipe example:
+
+```powershell
+cargo run --manifest-path runtime/Cargo.toml --bin nexus-agent-action -- --event action.json --token-file C:\\ProgramData\\Votal\\Nexus\\producers\\coding-agent.token --pipe VotalNexusAgentActions
+```
+
+Production MCP/agent integrations should use the same pre-action contract directly rather than shelling out to the CLI on every tool call.
