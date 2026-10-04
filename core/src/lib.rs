@@ -179,19 +179,29 @@ impl PolicyBundle {
     /// deployments should validate and sign bundles before loading them.
     pub fn evaluate(&self, event: &SecurityEvent) -> PolicyDecision {
         for rule in &self.rules {
-            let path_matches = !rule.executable_paths.is_empty()
-                && event.executable_path.as_ref().is_some_and(|path| {
+            let has_path_selector = !rule.executable_paths.is_empty();
+            let has_host_selector = !rule.destination_hosts.is_empty();
+
+            // Empty-selector rules are intentionally inert. For populated
+            // selector dimensions, every dimension must match. Values within
+            // one dimension are alternatives (OR).
+            if !has_path_selector && !has_host_selector {
+                continue;
+            }
+
+            let path_matches = !has_path_selector
+                || event.executable_path.as_ref().is_some_and(|path| {
                     rule.executable_paths.iter().any(|candidate| candidate == path)
                 });
 
-            let host_matches = !rule.destination_hosts.is_empty()
-                && event.destination_host.as_ref().is_some_and(|host| {
+            let host_matches = !has_host_selector
+                || event.destination_host.as_ref().is_some_and(|host| {
                     rule.destination_hosts.iter().any(|candidate| {
                         candidate.eq_ignore_ascii_case(host)
                     })
                 });
 
-            if !(path_matches || host_matches) {
+            if !(path_matches && host_matches) {
                 continue;
             }
 
@@ -533,6 +543,48 @@ mod tests {
         let decision = bundle(EnforcementMode::Enforce).evaluate(&event);
         assert_eq!(decision.action, DecisionAction::Allow);
         assert!(!decision.would_deny);
+    }
+
+    #[test]
+    fn multi_dimension_rule_requires_all_selectors() {
+        let policy = PolicyBundle {
+            version: 1,
+            mode: EnforcementMode::Enforce,
+            rules: vec![PolicyRule {
+                id: "app-and-host".into(),
+                category: "network".into(),
+                action: DecisionAction::Deny,
+                executable_paths: vec!["/opt/test-client".into()],
+                destination_hosts: vec!["blocked.example".into()],
+            }],
+        };
+
+        let mut event = event();
+        event.executable_path = Some("/opt/test-client".into());
+        event.destination_host = Some("allowed.example".into());
+        assert_eq!(policy.evaluate(&event).action, DecisionAction::Allow);
+
+        event.destination_host = Some("blocked.example".into());
+        assert_eq!(policy.evaluate(&event).action, DecisionAction::Deny);
+
+        event.executable_path = Some("/opt/other-client".into());
+        assert_eq!(policy.evaluate(&event).action, DecisionAction::Allow);
+    }
+
+    #[test]
+    fn empty_selector_rule_is_inert() {
+        let policy = PolicyBundle {
+            version: 1,
+            mode: EnforcementMode::Enforce,
+            rules: vec![PolicyRule {
+                id: "empty".into(),
+                category: "invalid-test".into(),
+                action: DecisionAction::Deny,
+                executable_paths: vec![],
+                destination_hosts: vec![],
+            }],
+        };
+        assert_eq!(policy.evaluate(&event()).action, DecisionAction::Allow);
     }
 
     #[test]
