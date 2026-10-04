@@ -5,7 +5,7 @@ fn main() {
 
 #[cfg(windows)]
 mod service {
-    use nexus_agent_core::{EventKind, SecurityEvent};
+    use nexus_agent_core::{verify_signed_policy, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
     use std::{
         collections::HashMap,
         ffi::OsString,
@@ -89,6 +89,13 @@ mod service {
             process_id: None,
         })?;
 
+        let policy = load_verified_policy();
+        let _ = write_diagnostic(if policy.is_some() {
+            "signed policy verified; Windows service remains shadow-only"
+        } else {
+            "no verified policy loaded; telemetry-only"
+        });
+
         let mut known = snapshot_processes().unwrap_or_default();
 
         loop {
@@ -103,7 +110,7 @@ mod service {
                         if !known.contains_key(pid) {
                             let full_path = query_process_path(*pid)
                                 .unwrap_or_else(|| process.image_name.clone());
-                            let _ = emit_process_start(process, full_path);
+                            let _ = emit_process_start(process, full_path, policy.as_ref());
                         }
                     }
                     known = current;
@@ -127,7 +134,7 @@ mod service {
         Ok(())
     }
 
-    fn emit_process_start(process: &ProcessInfo, executable_path: String) -> io::Result<()> {
+    fn emit_process_start(process: &ProcessInfo, executable_path: String, policy: Option<&PolicyBundle>) -> io::Result<()> {
         let now = OffsetDateTime::now_utc();
         let timestamp = now
             .format(&Rfc3339)
@@ -147,18 +154,47 @@ mod service {
             destination_host: None,
         };
 
-        append_json_line(&event)
+        append_json_line(&event, policy)
     }
 
-    fn append_json_line(event: &SecurityEvent) -> io::Result<()> {
+    fn append_json_line(event: &SecurityEvent, policy: Option<&PolicyBundle>) -> io::Result<()> {
         let path = Path::new(EVENT_LOG_PATH);
         if let Some(parent) = path.parent() {
             create_dir_all(parent)?;
         }
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        serde_json::to_writer(&mut file, event)?;
+        let record = if let Some(policy) = policy {
+            let decision = policy.evaluate(event);
+            serde_json::json!({
+                "event": event,
+                "policy_version": decision.policy_version,
+                "decision": format!("{:?}", decision.action).to_lowercase(),
+                "would_deny": decision.would_deny,
+                "enforcement": "shadow"
+            })
+        } else {
+            serde_json::json!({
+                "event": event,
+                "policy_version": null,
+                "decision": "allow",
+                "would_deny": false,
+                "enforcement": "telemetry_only"
+            })
+        };
+        serde_json::to_writer(&mut file, &record)?;
         file.write_all(b"\n")?;
         Ok(())
+    }
+
+
+    fn load_verified_policy() -> Option<PolicyBundle> {
+        if POLICY_PUBLIC_KEY.iter().all(|byte| *byte == 0) {
+            return None;
+        }
+
+        let envelope_bytes = std::fs::read(POLICY_PATH).ok()?;
+        let envelope: SignedPolicyEnvelope = serde_json::from_slice(&envelope_bytes).ok()?;
+        verify_signed_policy(&envelope, &POLICY_PUBLIC_KEY).ok()
     }
 
     fn write_diagnostic(message: &str) -> io::Result<()> {
