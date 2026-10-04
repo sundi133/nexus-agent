@@ -19,8 +19,10 @@
 #define POLICY_PATH "/Library/Application Support/Votal/Nexus/policy.signed.json"
 #define POLICY_VERSION_PATH "/Library/Application Support/Votal/Nexus/policy.version"
 #define HEALTH_PATH "/Library/Application Support/Votal/Nexus/health.json"
+#define EVENTS_PATH "/Library/Application Support/Votal/Nexus/events.jsonl"
 #define CONTAINMENT_DISABLE_PATH "/Library/Application Support/Votal/Nexus/disable-containment"
 #define MAX_POLICY_BYTES (1024 * 1024)
+#define MAX_PENDING_TELEMETRY 4096
 
 static os_log_t g_log;
 static NexusPolicyHandle *g_policy = NULL;
@@ -28,10 +30,185 @@ static pthread_rwlock_t g_policy_lock = PTHREAD_RWLOCK_INITIALIZER;
 static atomic_bool g_kill_switch = false;
 static atomic_bool g_reload_requested = false;
 static NexusRansomwareTrackerHandle *g_ransomware_tracker = NULL;
+static dispatch_queue_t g_telemetry_queue = NULL;
+static atomic_uint g_pending_telemetry = 0;
+static atomic_ullong g_dropped_telemetry = 0;
+static atomic_ullong g_event_sequence = 0;
+static char g_device_id[256] = "macos-device";
+
+typedef struct NexusTelemetryRecord {
+    char kind[32];
+    pid_t pid;
+    pid_t parent_pid;
+    char *executable_path;
+    char *target_path;
+    char decision[16];
+} NexusTelemetryRecord;
 
 static void ensure_state_directory(void) {
     (void)mkdir("/Library/Application Support/Votal", 0755);
     (void)mkdir("/Library/Application Support/Votal/Nexus", 0755);
+}
+
+static char *token_copy(es_string_token_t token) {
+    char *result = calloc(token.length + 1, 1);
+    if (result == NULL) {
+        return NULL;
+    }
+    if (token.length > 0 && token.data != NULL) {
+        memcpy(result, token.data, token.length);
+    }
+    return result;
+}
+
+static void json_string(FILE *file, const char *value) {
+    fputc('"', file);
+    if (value != NULL) {
+        for (const unsigned char *p = (const unsigned char *)value; *p; ++p) {
+            switch (*p) {
+                case '"': fputs("\\\"", file); break;
+                case '\\': fputs("\\\\", file); break;
+                case '\n': fputs("\\n", file); break;
+                case '\r': fputs("\\r", file); break;
+                case '\t': fputs("\\t", file); break;
+                default:
+                    if (*p < 0x20) {
+                        fprintf(file, "\\u%04x", *p);
+                    } else {
+                        fputc(*p, file);
+                    }
+            }
+        }
+    }
+    fputc('"', file);
+}
+
+static void iso8601_now(char *buffer, size_t buffer_len) {
+    struct timespec ts;
+    struct tm tm_value;
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0 ||
+        gmtime_r(&ts.tv_sec, &tm_value) == NULL) {
+        snprintf(buffer, buffer_len, "1970-01-01T00:00:00Z");
+        return;
+    }
+
+    strftime(buffer, buffer_len, "%Y-%m-%dT%H:%M:%SZ", &tm_value);
+}
+
+static void free_telemetry_record(NexusTelemetryRecord *record) {
+    if (record == NULL) {
+        return;
+    }
+    free(record->executable_path);
+    free(record->target_path);
+    free(record);
+}
+
+static void write_telemetry_record(NexusTelemetryRecord *record) {
+    FILE *file = fopen(EVENTS_PATH, "a");
+    if (file == NULL) {
+        atomic_fetch_add_explicit(&g_dropped_telemetry, 1, memory_order_relaxed);
+        free_telemetry_record(record);
+        return;
+    }
+
+    char timestamp[32];
+    iso8601_now(timestamp, sizeof(timestamp));
+    unsigned long long sequence =
+        atomic_fetch_add_explicit(&g_event_sequence, 1, memory_order_relaxed) + 1;
+
+    fputs("{\"event_id\":", file);
+    char event_id[96];
+    snprintf(event_id,
+             sizeof(event_id),
+             "macos-%d-%llu",
+             record->pid,
+             sequence);
+    json_string(file, event_id);
+
+    fputs(",\"timestamp\":", file);
+    json_string(file, timestamp);
+    fputs(",\"device_id\":", file);
+    json_string(file, g_device_id);
+    fputs(",\"kind\":", file);
+    json_string(file, record->kind);
+    fprintf(file,
+            ",\"pid\":%d,\"parent_pid\":%d,\"executable_path\":",
+            record->pid,
+            record->parent_pid);
+    if (record->executable_path != NULL) {
+        json_string(file, record->executable_path);
+    } else {
+        fputs("null", file);
+    }
+
+    fputs(",\"target_path\":", file);
+    if (record->target_path != NULL) {
+        json_string(file, record->target_path);
+    } else {
+        fputs("null", file);
+    }
+
+    fputs(",\"destination_host\":null,\"decision\":", file);
+    json_string(file, record->decision);
+    fprintf(file,
+            ",\"collector_dropped_events\":%llu}\n",
+            (unsigned long long)atomic_load_explicit(
+                &g_dropped_telemetry,
+                memory_order_relaxed));
+    fclose(file);
+    free_telemetry_record(record);
+}
+
+static void enqueue_telemetry(
+    const es_message_t *message,
+    const char *kind,
+    const es_file_t *target_file,
+    const char *decision)
+{
+    if (message == NULL || message->process == NULL || g_telemetry_queue == NULL) {
+        return;
+    }
+
+    unsigned pending =
+        atomic_fetch_add_explicit(&g_pending_telemetry, 1, memory_order_relaxed);
+    if (pending >= MAX_PENDING_TELEMETRY) {
+        atomic_fetch_sub_explicit(&g_pending_telemetry, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_dropped_telemetry, 1, memory_order_relaxed);
+        return;
+    }
+
+    NexusTelemetryRecord *record = calloc(1, sizeof(*record));
+    if (record == NULL) {
+        atomic_fetch_sub_explicit(&g_pending_telemetry, 1, memory_order_relaxed);
+        atomic_fetch_add_explicit(&g_dropped_telemetry, 1, memory_order_relaxed);
+        return;
+    }
+
+    snprintf(record->kind, sizeof(record->kind), "%s", kind);
+    snprintf(record->decision,
+             sizeof(record->decision),
+             "%s",
+             decision == NULL ? "observe" : decision);
+
+    record->pid = audit_token_to_pid(message->process->audit_token);
+    record->parent_pid = message->process->ppid;
+
+    if (message->process->executable != NULL) {
+        record->executable_path =
+            token_copy(message->process->executable->path);
+    }
+    if (target_file != NULL) {
+        record->target_path = token_copy(target_file->path);
+    }
+
+    dispatch_async(g_telemetry_queue, ^{
+        write_telemetry_record(record);
+        atomic_fetch_sub_explicit(
+            &g_pending_telemetry,
+            1,
+            memory_order_relaxed);
+    });
 }
 
 static bool trust_root_configured(void) {
@@ -229,13 +406,17 @@ static void write_health_file(void) {
         ",\n"
         "  \"kill_switch_engaged\": %s,\n"
         "  \"capabilities\": [\n"
-        "    {\"name\":\"endpoint_security\",\"state\":\"active\",\"detail\":\"Endpoint Security system extension subscribed\"},\n"
+        "    {\"name\":\"endpoint_security\",\"state\":\"active\",\"detail\":\"Endpoint Security system extension subscribed; pending_telemetry=%u dropped_telemetry=%llu\"},\n"
         "    {\"name\":\"process_enforcement\",\"state\":\"%s\",\"detail\":\"AUTH_EXEC local signed-policy enforcement\"},\n"
         "    {\"name\":\"ransomware_detection\",\"state\":\"shadow\",\"detail\":\"unique-path file behavior correlation\"},\n"
         "    {\"name\":\"ransomware_response\",\"state\":\"%s\",\"detail\":\"%s\"}\n"
         "  ]\n"
         "}\n",
         kill_switch ? "true" : "false",
+        atomic_load_explicit(&g_pending_telemetry, memory_order_relaxed),
+        (unsigned long long)atomic_load_explicit(
+            &g_dropped_telemetry,
+            memory_order_relaxed),
         policy_version == 0 || kill_switch ? "shadow" : "active",
         response_state,
         response_detail);
@@ -350,6 +531,16 @@ static void handle_auth_exec(es_client_t *client, const es_message_t *message) {
                      "failed responding to AUTH_EXEC: %{public}d",
                      response);
     }
+
+    const es_file_t *target_file =
+        message->event.exec.target == NULL
+            ? NULL
+            : message->event.exec.target->executable;
+    enqueue_telemetry(
+        message,
+        "process_exec",
+        target_file,
+        result == ES_AUTH_RESULT_DENY ? "deny" : "allow");
 }
 
 static void observe_file_activity(const es_message_t *message) {
@@ -464,6 +655,15 @@ static void observe_file_activity(const es_message_t *message) {
             }
         }
     }
+
+
+    const char *kind = "file_write";
+    if (message->event_type == ES_EVENT_TYPE_NOTIFY_RENAME) {
+        kind = "file_rename";
+    } else if (message->event_type == ES_EVENT_TYPE_NOTIFY_UNLINK) {
+        kind = "file_delete";
+    }
+    enqueue_telemetry(message, kind, file, "observe");
 }
 
 static void handle_message(es_client_t *client, const es_message_t *message) {
@@ -482,6 +682,13 @@ static void handle_message(es_client_t *client, const es_message_t *message) {
 int main(void) {
     g_log = os_log_create("ai.votal.nexus.agent.endpoint", "endpoint-security");
     ensure_state_directory();
+    g_telemetry_queue =
+        dispatch_queue_create("ai.votal.nexus.agent.endpoint.telemetry",
+                              DISPATCH_QUEUE_SERIAL);
+    if (gethostname(g_device_id, sizeof(g_device_id) - 1) != 0) {
+        snprintf(g_device_id, sizeof(g_device_id), "macos-device");
+    }
+    g_device_id[sizeof(g_device_id) - 1] = '\0';
     signal(SIGUSR1, set_kill_switch);
     signal(SIGUSR2, clear_kill_switch);
     signal(SIGHUP, request_policy_reload);
