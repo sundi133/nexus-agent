@@ -1,7 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/wfp_control.c");
 
-    if std::env::var("CARGO_CFG_WINDOWS").is_err() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
 
