@@ -5,6 +5,7 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
+base64 = "0.22"
 libc = "0.2"
 nexus-agent-core = { path = "../../core" }
 serde_json = "1"
