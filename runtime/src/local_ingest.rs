@@ -1,8 +1,14 @@
-use nexus_agent_core::AgentActionEvent;
+use nexus_agent_core::{
+    AgentActionDecision, AgentActionEvent, DecisionAction, PolicyBundle,
+};
+use serde::Serialize;
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
-    sync::mpsc::Sender,
+    sync::{
+        mpsc::Sender,
+        Arc, RwLock,
+    },
     thread,
     time::Duration,
 };
@@ -10,10 +16,17 @@ use std::{
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AgentActionAuditRecord {
+    pub event: AgentActionEvent,
+    pub decision: AgentActionDecision,
+}
+
 pub fn spawn_local_ingest(
     port: u16,
     token: String,
-    sender: Sender<AgentActionEvent>,
+    policy: Arc<RwLock<Option<PolicyBundle>>>,
+    sender: Sender<AgentActionAuditRecord>,
 ) -> io::Result<thread::JoinHandle<()>> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     listener.set_nonblocking(true)?;
@@ -21,7 +34,7 @@ pub fn spawn_local_ingest(
     Ok(thread::spawn(move || loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                let _ = handle_connection(stream, &token, &sender);
+                let _ = handle_connection(stream, &token, &policy, &sender);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(25));
@@ -36,7 +49,8 @@ pub fn spawn_local_ingest(
 fn handle_connection(
     mut stream: TcpStream,
     token: &str,
-    sender: &Sender<AgentActionEvent>,
+    policy: &Arc<RwLock<Option<PolicyBundle>>>,
+    sender: &Sender<AgentActionAuditRecord>,
 ) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -49,7 +63,7 @@ fn handle_connection(
         return Ok(());
     }
     if request_line.len() > 4096 {
-        return write_response(&mut stream, 400, "request line too large");
+        return write_error_response(&mut stream, 400, "request line too large");
     }
 
     let mut header_bytes = request_line.len();
@@ -60,14 +74,16 @@ fn handle_connection(
         let mut line = String::new();
         let read = reader.read_line(&mut line)?;
         if read == 0 {
-            return write_response(&mut stream, 400, "incomplete headers");
+            return write_error_response(&mut stream, 400, "incomplete headers");
         }
         header_bytes = header_bytes.saturating_add(read);
         if header_bytes > MAX_HEADER_BYTES {
-            return write_response(&mut stream, 431, "headers too large");
+            return write_error_response(&mut stream, 431, "headers too large");
         }
 
-        if line == "\r\n" || line == "\n" {
+        if line == "
+" || line == "
+" {
             break;
         }
 
@@ -87,7 +103,7 @@ fn handle_connection(
     let path = parts.next().unwrap_or_default();
 
     if method != "POST" || path != "/v1/agent-actions" {
-        return write_response(&mut stream, 404, "not found");
+        return write_error_response(&mut stream, 404, "not found");
     }
 
     let supplied_token = authorization
@@ -96,14 +112,14 @@ fn handle_connection(
     if !supplied_token.is_some_and(|supplied| {
         constant_time_eq(supplied.as_bytes(), token.as_bytes())
     }) {
-        return write_response(&mut stream, 401, "unauthorized");
+        return write_error_response(&mut stream, 401, "unauthorized");
     }
 
     let Some(body_len) = content_length else {
-        return write_response(&mut stream, 411, "content-length required");
+        return write_error_response(&mut stream, 411, "content-length required");
     };
     if body_len == 0 || body_len > MAX_BODY_BYTES {
-        return write_response(&mut stream, 413, "invalid body size");
+        return write_error_response(&mut stream, 413, "invalid body size");
     }
 
     let mut body = vec![0u8; body_len];
@@ -111,17 +127,51 @@ fn handle_connection(
 
     let event: AgentActionEvent = match serde_json::from_slice(&body) {
         Ok(event) => event,
-        Err(_) => return write_response(&mut stream, 400, "invalid JSON"),
+        Err(_) => return write_error_response(&mut stream, 400, "invalid JSON"),
     };
     if event.validate().is_err() {
-        return write_response(&mut stream, 422, "invalid agent action");
+        return write_error_response(&mut stream, 422, "invalid agent action");
     }
 
-    if sender.send(event).is_err() {
-        return write_response(&mut stream, 503, "runtime unavailable");
+    let decision = decide_agent_action(policy, &event);
+    let audit = AgentActionAuditRecord {
+        event,
+        decision: decision.clone(),
+    };
+
+    if sender.send(audit).is_err() && decision.action != DecisionAction::Deny {
+        return write_error_response(&mut stream, 503, "runtime unavailable");
     }
 
-    write_response(&mut stream, 202, "accepted")
+    let status = if decision.action == DecisionAction::Deny {
+        403
+    } else {
+        200
+    };
+    write_decision_response(&mut stream, status, &decision)
+}
+
+fn decide_agent_action(
+    policy: &Arc<RwLock<Option<PolicyBundle>>>,
+    event: &AgentActionEvent,
+) -> AgentActionDecision {
+    let Ok(guard) = policy.read() else {
+        return fail_open_decision("policy lock unavailable");
+    };
+    guard
+        .as_ref()
+        .map(|policy| policy.evaluate_agent_action(event))
+        .unwrap_or_else(|| fail_open_decision("no verified policy loaded"))
+}
+
+fn fail_open_decision(reason: &str) -> AgentActionDecision {
+    AgentActionDecision {
+        action: DecisionAction::Allow,
+        rule_id: None,
+        reason: reason.to_string(),
+        policy_version: 0,
+        would_deny: false,
+    }
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -135,9 +185,30 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
+fn write_decision_response(
+    stream: &mut TcpStream,
+    status: u16,
+    decision: &AgentActionDecision,
+) -> io::Result<()> {
+    let reason = if status == 403 { "Forbidden" } else { "OK" };
+    let body = serde_json::to_string(decision)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    write!(
+        stream,
+        "HTTP/1.1 {status} {reason}
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
+        body.len(),
+        body
+    )?;
+    stream.flush()
+}
+
+fn write_error_response(stream: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
     let reason = match status {
-        202 => "Accepted",
         400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
@@ -149,10 +220,19 @@ fn write_response(stream: &mut TcpStream, status: u16, message: &str) -> io::Res
         _ => "Error",
     };
 
-    let body = format!("{{\"status\":{status},\"message\":\"{message}\"}}\n");
+    let body = serde_json::json!({
+        "status": status,
+        "message": message,
+    })
+    .to_string();
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {status} {reason}
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{}",
         body.len(),
         body
     )?;
@@ -162,24 +242,45 @@ fn write_response(stream: &mut TcpStream, status: u16, message: &str) -> io::Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_agent_core::{
+        AgentActionKind, AgentActionRule, EnforcementMode,
+    };
     use std::sync::mpsc;
 
-    fn event_json() -> String {
-        serde_json::json!({
-            "event_id": "a-1",
-            "timestamp": "2026-10-04T00:00:00Z",
-            "device_id": "device-1",
-            "pid": 42,
-            "agent_id": "agent-1",
-            "session_id": "session-1",
-            "kind": "mcp_tool_call",
-            "mcp_server": "filesystem",
-            "tool_name": "read_file",
-            "operation": "read",
-            "resource": "/tmp/demo.txt",
-            "risk_tags": ["filesystem_read"]
-        })
-        .to_string()
+    fn event() -> AgentActionEvent {
+        AgentActionEvent {
+            event_id: "a-1".into(),
+            timestamp: "2026-10-04T00:00:00Z".into(),
+            device_id: "device-1".into(),
+            pid: Some(42),
+            agent_id: Some("agent-1".into()),
+            session_id: Some("session-1".into()),
+            kind: AgentActionKind::McpToolCall,
+            mcp_server: Some("filesystem".into()),
+            tool_name: Some("write_file".into()),
+            operation: "write".into(),
+            resource: Some("/etc/hosts".into()),
+            risk_tags: vec!["filesystem_write".into()],
+        }
+    }
+
+    fn deny_policy(mode: EnforcementMode) -> PolicyBundle {
+        PolicyBundle {
+            version: 7,
+            mode,
+            rules: vec![],
+            agent_action_rules: vec![AgentActionRule {
+                id: "deny-etc-write".into(),
+                action: DecisionAction::Deny,
+                kinds: vec![AgentActionKind::McpToolCall],
+                mcp_servers: vec!["filesystem".into()],
+                tool_names: vec!["write_file".into()],
+                operations: vec!["write".into()],
+                resource_prefixes: vec!["/etc/".into()],
+                risk_tags: vec![],
+            }],
+            ransomware_response: None,
+        }
     }
 
     #[test]
@@ -191,15 +292,38 @@ mod tests {
 
     #[test]
     fn validates_expected_agent_action_payload() {
-        let event: AgentActionEvent = serde_json::from_str(&event_json()).unwrap();
-        assert!(event.validate().is_ok());
+        assert!(event().validate().is_ok());
     }
 
     #[test]
-    fn channel_accepts_valid_event() {
+    fn channel_accepts_valid_audit_record() {
         let (tx, rx) = mpsc::channel();
-        let event: AgentActionEvent = serde_json::from_str(&event_json()).unwrap();
-        tx.send(event).unwrap();
-        assert_eq!(rx.recv().unwrap().tool_name.as_deref(), Some("read_file"));
+        let policy = Arc::new(RwLock::new(Some(deny_policy(EnforcementMode::Audit))));
+        let event = event();
+        let decision = decide_agent_action(&policy, &event);
+        tx.send(AgentActionAuditRecord {
+            event,
+            decision,
+        })
+        .unwrap();
+        let record = rx.recv().unwrap();
+        assert_eq!(record.decision.action, DecisionAction::Alert);
+        assert!(record.decision.would_deny);
+    }
+
+    #[test]
+    fn enforce_policy_denies_matching_tool_action() {
+        let policy = Arc::new(RwLock::new(Some(deny_policy(EnforcementMode::Enforce))));
+        let decision = decide_agent_action(&policy, &event());
+        assert_eq!(decision.action, DecisionAction::Deny);
+        assert_eq!(decision.rule_id.as_deref(), Some("deny-etc-write"));
+    }
+
+    #[test]
+    fn missing_policy_fails_open() {
+        let policy = Arc::new(RwLock::new(None));
+        let decision = decide_agent_action(&policy, &event());
+        assert_eq!(decision.action, DecisionAction::Allow);
+        assert_eq!(decision.policy_version, 0);
     }
 }
