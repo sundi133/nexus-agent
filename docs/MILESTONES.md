@@ -119,7 +119,8 @@ Status: normalized event model, authenticated localhost bridge, signed MCP/tool/
 - macOS Unix-socket peer PID/UID/GID/executable-path attestation
 - Windows named-pipe client PID/executable attestation
 - executable SHA-256 pinning on Linux, macOS, and Windows attested producer paths
-- remaining: macOS code-signature identity, Windows publisher/AuthentiCode identity, and adapters that enforce decisions inside specific MCP/agent runtimes
+- generic MCP stdio enforcement proxy for `tools/call` and `resources/read`, fail-closed by default
+- remaining: macOS code-signature identity, Windows publisher/AuthentiCode identity, Streamable HTTP/SDK-native MCP adapters, and broader agent-runtime integrations
 
 
 ## Live policy/control-plane status
