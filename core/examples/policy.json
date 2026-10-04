@@ -6,7 +6,9 @@
       "id": "example-suspicious-executable",
       "category": "execution",
       "action": "deny",
-      "executable_paths": ["/tmp/suspicious-demo"],
+      "executable_paths": [
+        "/tmp/suspicious-demo"
+      ],
       "destination_hosts": []
     },
     {
@@ -14,7 +16,15 @@
       "category": "network",
       "action": "deny",
       "executable_paths": [],
-      "destination_hosts": ["blocked.example.invalid"]
+      "destination_hosts": [
+        "blocked.example.invalid"
+      ]
     }
-  ]
+  ],
+  "ransomware_response": {
+    "mode": "shadow",
+    "action": "terminate_process",
+    "min_score": 90,
+    "require_suspicious_process_context": true
+  }
 }
