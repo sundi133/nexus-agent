@@ -131,6 +131,13 @@ impl WindowsPipeStream {
     }
 }
 
+// SAFETY: Windows kernel handles are valid to use from another thread. This
+// wrapper uniquely owns its HANDLE value, transfers that ownership when moved,
+// and closes the handle exactly once in Drop. Concurrent access happens only
+// through explicitly duplicated handles created by try_clone_stream().
+#[cfg(windows)]
+unsafe impl Send for WindowsPipeStream {}
+
 #[cfg(windows)]
 impl Read for WindowsPipeStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
