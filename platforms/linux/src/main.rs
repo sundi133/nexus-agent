@@ -39,7 +39,7 @@ mod linux_agent {
 
     pub fn run() -> io::Result<()> {
         let fan_fd = fanotify_start("/")?;
-        let policy = load_verified_policy();
+        let mut policy = load_verified_policy();
         let (mut network_lease, mut network_state, mut network_detail) =
             configure_network_enforcement(policy.as_ref());
 
@@ -55,11 +55,38 @@ mod linux_agent {
         ));
 
         let started = Instant::now();
+        let mut last_policy_check = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
         let mut contained_pids = HashSet::new();
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         loop {
+            if last_policy_check.elapsed() >= Duration::from_secs(1) {
+                if let Some(candidate) = load_newer_verified_policy(
+                    policy.as_ref().map(|value| value.version),
+                ) {
+                    let (candidate_lease, candidate_state, candidate_detail) =
+                        configure_network_enforcement(Some(&candidate));
+
+                    network_lease = candidate_lease;
+                    network_state = candidate_state;
+                    network_detail = candidate_detail;
+                    policy = Some(candidate);
+
+                    let _ = write_health(&build_health(
+                        policy.as_ref(),
+                        network_state,
+                        &network_detail,
+                    ));
+                    eprintln!(
+                        "nexus-agent-linux: activated policy version={} network_state={:?}",
+                        policy.as_ref().map(|value| value.version).unwrap_or_default(),
+                        network_state,
+                    );
+                }
+                last_policy_check = Instant::now();
+            }
+
             let refresh_error = network_lease
                 .as_mut()
                 .and_then(|lease| lease.refresh_if_due().err());
@@ -454,6 +481,25 @@ mod linux_agent {
         serde_json::to_writer_pretty(&mut file, health)?;
         file.write_all(b"\n")?;
         Ok(())
+    }
+
+    fn policy_watermark() -> Option<u64> {
+        std::fs::read_to_string(POLICY_VERSION_PATH)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+    }
+
+    fn load_newer_verified_policy(current_version: Option<u64>) -> Option<PolicyBundle> {
+        let disk_version = policy_watermark()?;
+        if current_version.is_some_and(|current| disk_version <= current) {
+            return None;
+        }
+
+        let candidate = load_verified_policy()?;
+        if candidate.version != disk_version {
+            return None;
+        }
+        Some(candidate)
     }
 
     fn load_verified_policy() -> Option<PolicyBundle> {
