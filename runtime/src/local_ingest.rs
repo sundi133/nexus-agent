@@ -2,6 +2,7 @@ use nexus_agent_core::{
     AgentActionDecision, AgentActionEvent, DecisionAction, PolicyBundle,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
@@ -59,6 +60,7 @@ pub struct ProducerCredential {
     pub token: String,
     pub expected_uid: Option<u32>,
     pub executable_paths: Vec<PathBuf>,
+    pub executable_sha256: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -76,6 +78,7 @@ pub struct ProducerAttestation {
     pub uid: Option<u32>,
     pub gid: Option<u32>,
     pub executable_path: Option<String>,
+    pub executable_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -91,6 +94,7 @@ struct PeerIdentity {
     uid: Option<u32>,
     gid: Option<u32>,
     executable_path: Option<String>,
+    executable_sha256: Option<String>,
     transport: &'static str,
 }
 
@@ -600,12 +604,53 @@ fn authenticate_producer(
                 }
             }
 
+            let mut verified_peer = peer.clone();
+            if !producer.executable_sha256.is_empty() {
+                let digest = peer_executable_sha256(peer)?;
+                if !producer
+                    .executable_sha256
+                    .iter()
+                    .any(|expected| expected.eq_ignore_ascii_case(&digest))
+                {
+                    return None;
+                }
+                verified_peer.executable_sha256 = Some(digest);
+            }
+
             Some(AuthenticatedProducer {
                 agent_id: Some(producer.agent_id.clone()),
-                attestation: attestation_from_peer(peer, true),
+                attestation: attestation_from_peer(&verified_peer, true),
             })
         }
     }
+}
+
+fn peer_executable_sha256(peer: &PeerIdentity) -> Option<String> {
+    use std::fs::File;
+
+    #[cfg(target_os = "linux")]
+    let mut file = {
+        let pid = peer.pid?;
+        File::open(format!("/proc/{pid}/exe")).ok()?
+    };
+
+    #[cfg(not(target_os = "linux"))]
+    let mut file = {
+        let path = peer.executable_path.as_deref()?;
+        File::open(path).ok()?
+    };
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    Some(format!("{:x}", hasher.finalize()))
 }
 
 fn executable_path_matches(candidate: &std::path::Path, peer_path: &str) -> bool {
@@ -629,6 +674,7 @@ fn attestation_from_peer(peer: &PeerIdentity, credential_bound: bool) -> Produce
         uid: peer.uid,
         gid: peer.gid,
         executable_path: peer.executable_path.clone(),
+        executable_sha256: peer.executable_sha256.clone(),
     }
 }
 
@@ -682,6 +728,7 @@ fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
         uid: Some(uid),
         gid: Some(gid),
         executable_path: None,
+executable_sha256: None,
         transport: "unix_socket_peer_eid",
     })
 }
@@ -819,12 +866,14 @@ mod tests {
             token: "b".repeat(32),
             expected_uid: Some(1000),
             executable_paths: vec!["/usr/local/bin/agent-b".into()],
+        executable_sha256: vec![],
         }]);
         let peer = PeerIdentity {
             pid: Some(44),
             uid: Some(1000),
             gid: Some(1000),
             executable_path: Some("/usr/local/bin/agent-b".into()),
+executable_sha256: None,
             transport: "unix_socket_linux_peercred",
         };
         let authenticated =
@@ -840,6 +889,7 @@ mod tests {
 
         let wrong_exe = PeerIdentity {
             executable_path: Some("/tmp/other".into()),
+executable_sha256: None,
             ..peer
         };
         assert!(authenticate_producer(&auth, &"b".repeat(32), &wrong_exe).is_none());
@@ -905,6 +955,7 @@ mod tests {
                 uid: Some(1000),
                 gid: Some(1000),
                 executable_path: Some("/usr/bin/test".into()),
+                executable_sha256: None,
             },
         })
         .unwrap();
