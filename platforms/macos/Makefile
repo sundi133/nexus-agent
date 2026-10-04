@@ -8,7 +8,7 @@ SOURCES = Sources/nexus_es_collector.c
 SHADOW_SOURCES = Sources/nexus_es_auth_shadow.c
 ENFORCE_SOURCES = Sources/nexus_es_auth_enforce.c
 
-.PHONY: all syntax clean
+.PHONY: all syntax package-syntax clean
 
 all: $(TARGET) $(SHADOW_TARGET) $(ENFORCE_TARGET)
 
@@ -24,6 +24,12 @@ $(TARGET): $(SOURCES)
 $(SHADOW_TARGET): $(SHADOW_SOURCES)
 	mkdir -p build
 	$(CC) $(CFLAGS) $(SHADOW_SOURCES) $(FRAMEWORKS) -o $(SHADOW_TARGET)
+
+package-syntax:
+	xcrun swiftc -typecheck -swift-version 5 Package/HostApp/Sources/*.swift -framework SwiftUI -framework SystemExtensions
+	xcrun --sdk macosx clang $(CFLAGS) -fsyntax-only Package/SystemExtension/Sources/main.c
+	plutil -lint Package/HostApp/Info.plist Package/HostApp/NexusAgent.entitlements Package/SystemExtension/Info.plist Package/SystemExtension/NexusEndpointExtension.entitlements
+	ruby -e 'require "yaml"; YAML.load_file("Package/project.yml"); puts "project.yml OK"'
 
 $(ENFORCE_TARGET): $(ENFORCE_SOURCES)
 	mkdir -p build
