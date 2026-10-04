@@ -20,6 +20,7 @@ pub struct RuntimeConfig {
     pub event_offset_path: PathBuf,
     pub health_source_path: PathBuf,
     pub local_ingest_port: Option<u16>,
+    pub local_ingest_socket_path: Option<PathBuf>,
     pub local_ingest_token_file: Option<PathBuf>,
     #[serde(default)]
     pub local_ingest_producers: Vec<LocalProducerConfig>,
@@ -35,6 +36,10 @@ pub struct RuntimeConfig {
 pub struct LocalProducerConfig {
     pub agent_id: String,
     pub token_file: PathBuf,
+    #[serde(default)]
+    pub expected_uid: Option<u32>,
+    #[serde(default)]
+    pub executable_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,33 +81,58 @@ impl RuntimeConfig {
             return Err(ConfigError::InvalidSpoolLimits);
         }
 
-        match (&self.local_ingest_port, &self.local_ingest_token_file) {
-            (None, None) if self.local_ingest_producers.is_empty() => {}
-            (Some(port), Some(path))
-                if *port >= 1024
-                    && !path.as_os_str().is_empty()
-                    && self.local_ingest_producers.is_empty() => {}
-            (Some(port), None)
-                if *port >= 1024 && !self.local_ingest_producers.is_empty() => {
-                    if self.local_ingest_producers.len() > 64 {
-                        return Err(ConfigError::InvalidLocalIngest);
-                    }
-                    let mut ids = std::collections::HashSet::new();
-                    for producer in &self.local_ingest_producers {
-                        if producer.agent_id.is_empty()
-                            || producer.agent_id.len() > 256
-                            || producer.token_file.as_os_str().is_empty()
-                            || !ids.insert(producer.agent_id.as_str())
-                        {
-                            return Err(ConfigError::InvalidLocalIngest);
-                        }
-                    }
+        let socket_path_present = self
+            .local_ingest_socket_path
+            .as_ref()
+            .is_some_and(|path| !path.as_os_str().is_empty());
+
+        match (
+            &self.local_ingest_port,
+            socket_path_present,
+            &self.local_ingest_token_file,
+            self.local_ingest_producers.as_slice(),
+        ) {
+            (None, false, None, []) => {}
+            (Some(port), false, Some(path), [])
+                if *port >= 1024 && !path.as_os_str().is_empty() => {}
+            (Some(port), false, None, producers)
+                if *port >= 1024 && !producers.is_empty() => {
+                    validate_local_producers(producers)?;
                 }
+            (None, true, None, producers) if !producers.is_empty() => {
+                validate_local_producers(producers)?;
+            }
             _ => return Err(ConfigError::InvalidLocalIngest),
         }
 
         Ok(())
     }
+}
+
+fn validate_local_producers(
+    producers: &[LocalProducerConfig],
+) -> Result<(), ConfigError> {
+    if producers.len() > 64 {
+        return Err(ConfigError::InvalidLocalIngest);
+    }
+
+    let mut ids = std::collections::HashSet::new();
+    for producer in producers {
+        if producer.agent_id.is_empty()
+            || producer.agent_id.len() > 256
+            || producer.token_file.as_os_str().is_empty()
+            || !ids.insert(producer.agent_id.as_str())
+            || producer.executable_paths.len() > 16
+            || producer
+                .executable_paths
+                .iter()
+                .any(|path| path.as_os_str().is_empty())
+        {
+            return Err(ConfigError::InvalidLocalIngest);
+        }
+    }
+
+    Ok(())
 }
 
 impl ControlPlaneConfig {
@@ -167,6 +197,7 @@ mod tests {
             event_offset_path: "events.offset".into(),
             health_source_path: "health.json".into(),
             local_ingest_port: None,
+            local_ingest_socket_path: None,
             local_ingest_token_file: None,
             local_ingest_producers: vec![],
             cycle_interval_ms: 1000,
@@ -216,15 +247,35 @@ mod tests {
             LocalProducerConfig {
                 agent_id: "agent-a".into(),
                 token_file: "agent-a.token".into(),
+                expected_uid: Some(1000),
+                executable_paths: vec!["/usr/local/bin/agent-a".into()],
             },
             LocalProducerConfig {
                 agent_id: "agent-b".into(),
                 token_file: "agent-b.token".into(),
+                expected_uid: None,
+                executable_paths: vec![],
             },
         ];
         assert!(cfg.validate().is_ok());
 
         cfg.local_ingest_producers[1].agent_id = "agent-a".into();
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
+    }
+
+    #[test]
+    fn validates_attested_unix_socket_mode() {
+        let mut cfg = config();
+        cfg.local_ingest_socket_path = Some("/run/votal/nexus/agent-actions.sock".into());
+        cfg.local_ingest_producers = vec![LocalProducerConfig {
+            agent_id: "agent-a".into(),
+            token_file: "agent-a.token".into(),
+            expected_uid: Some(1000),
+            executable_paths: vec!["/usr/local/bin/agent-a".into()],
+        }];
+        assert!(cfg.validate().is_ok());
+
+        cfg.local_ingest_port = Some(8765);
         assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
     }
 
