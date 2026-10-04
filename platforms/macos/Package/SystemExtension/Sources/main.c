@@ -314,6 +314,10 @@ int main(void) {
             nexus_policy_free(g_policy);
             g_policy = NULL;
         }
+        if (g_ransomware_tracker != NULL) {
+            nexus_ransomware_tracker_free(g_ransomware_tracker);
+            g_ransomware_tracker = NULL;
+        }
         return EXIT_FAILURE;
     }
 
