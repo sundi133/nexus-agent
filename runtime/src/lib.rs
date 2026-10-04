@@ -1,4 +1,5 @@
 mod credentials;
+pub use credentials::read_secret_file;
 pub mod config;
 pub mod http;
 pub mod local_ingest;
