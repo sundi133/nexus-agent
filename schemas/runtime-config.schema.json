@@ -127,10 +127,32 @@
           "token_file": {
             "type": "string",
             "minLength": 1
+          },
+          "expected_uid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "executable_paths": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         },
         "additionalProperties": false
       }
+    },
+    "local_ingest_socket_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
     }
   },
   "additionalProperties": false
