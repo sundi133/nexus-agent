@@ -460,6 +460,8 @@ fn handle_connection<S: LocalStream>(
     let mut header_bytes = request_line.len();
     let mut authorization = None;
     let mut content_length = None;
+    let mut content_type = None;
+    let mut transfer_encoding_seen = false;
 
     loop {
         let mut line = String::new();
@@ -478,10 +480,44 @@ fn handle_connection<S: LocalStream>(
 
         if let Some((name, value)) = line.split_once(':') {
             match name.trim().to_ascii_lowercase().as_str() {
-                "authorization" => authorization = Some(value.trim().to_string()),
-                "content-length" => {
-                    content_length = value.trim().parse::<usize>().ok();
+                "authorization" => {
+                    if authorization.is_some() {
+                        return write_error_response(
+                            &mut stream,
+                            400,
+                            "duplicate authorization header",
+                        );
+                    }
+                    authorization = Some(value.trim().to_string());
                 }
+                "content-length" => {
+                    if content_length.is_some() {
+                        return write_error_response(
+                            &mut stream,
+                            400,
+                            "duplicate content-length header",
+                        );
+                    }
+                    content_length = value.trim().parse::<usize>().ok();
+                    if content_length.is_none() {
+                        return write_error_response(
+                            &mut stream,
+                            400,
+                            "invalid content-length",
+                        );
+                    }
+                }
+                "content-type" => {
+                    if content_type.is_some() {
+                        return write_error_response(
+                            &mut stream,
+                            400,
+                            "duplicate content-type header",
+                        );
+                    }
+                    content_type = Some(value.trim().to_ascii_lowercase());
+                }
+                "transfer-encoding" => transfer_encoding_seen = true,
                 _ => {}
             }
         }
@@ -493,6 +529,23 @@ fn handle_connection<S: LocalStream>(
 
     if method != "POST" || path != "/v1/agent-actions" {
         return write_error_response(&mut stream, 404, "not found");
+    }
+    if transfer_encoding_seen {
+        return write_error_response(
+            &mut stream,
+            400,
+            "transfer-encoding is not supported",
+        );
+    }
+    if !content_type
+        .as_deref()
+        .is_some_and(|value| value == "application/json")
+    {
+        return write_error_response(
+            &mut stream,
+            415,
+            "content-type must be application/json",
+        );
     }
 
     let supplied_token = authorization
@@ -874,6 +927,7 @@ fn write_error_response<W: Write>(
         404 => "Not Found",
         411 => "Length Required",
         413 => "Payload Too Large",
+        415 => "Unsupported Media Type",
         422 => "Unprocessable Entity",
         431 => "Request Header Fields Too Large",
         503 => "Service Unavailable",
