@@ -1,0 +1,15 @@
+{
+  "control_plane": {
+    "policy_url": "https://control.example/v1/endpoint/policy",
+    "health_url": "https://control.example/v1/endpoint/health",
+    "events_url": "https://control.example/v1/endpoint/events",
+    "bearer_token_file": "/var/lib/votal/nexus/device.token",
+    "connect_timeout_ms": 5000,
+    "request_timeout_ms": 30000
+  },
+  "spool_dir": "/var/lib/votal/nexus/spool",
+  "policy_signed_path": "/var/lib/votal/nexus/policy.signed.json",
+  "policy_watermark_path": "/var/lib/votal/nexus/policy.version",
+  "spool_max_bytes": 67108864,
+  "segment_max_bytes": 4194304
+}
