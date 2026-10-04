@@ -224,6 +224,7 @@ fn run_runtime_loop(
         );
 
         let report = worker.run_once(&health);
+        let mut next_cycle_errors = report.errors.clone();
 
         if report.policy_updated {
             match policy_store_for_decisions.load_active() {
@@ -231,19 +232,19 @@ fn run_runtime_loop(
                     if let Ok(mut guard) = active_policy.write() {
                         *guard = active.map(|value| value.policy);
                     } else {
-                        previous_cycle_errors.push(
+                        next_cycle_errors.push(
                             "active agent-action policy lock unavailable after policy update"
                                 .to_string(),
                         );
                     }
                 }
-                Err(error) => previous_cycle_errors.push(format!(
+                Err(error) => next_cycle_errors.push(format!(
                     "cannot refresh active agent-action policy after update: {error}"
                 )),
             }
         }
 
-        previous_cycle_errors.extend(report.errors.clone());
+        previous_cycle_errors = next_cycle_errors;
 
         if !report.errors.is_empty() {
             eprintln!(
