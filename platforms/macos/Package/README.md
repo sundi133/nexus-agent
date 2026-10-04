@@ -32,7 +32,11 @@ Apple must approve the Endpoint Security entitlement for the development team be
 
 The packaged system extension subscribes to `AUTH_EXEC` but always responds `ALLOW`. This is intentional. The separate development enforcement harness proves the deny/kill-switch path while this target establishes the signed installation lifecycle.
 
-The next packaging step is to link the Rust `nexus-agent-core` static library into the system extension, load an Ed25519-signed policy snapshot at startup, and only then enable narrow enforcement.
+The system extension now links the Rust `nexus-agent-core` static library. At startup it reads `/Library/Application Support/Votal/Nexus/policy.signed.json`, verifies the Ed25519 signature against the public trust root compiled into `NexusTrustRoot.h`, and loads the policy only if verification succeeds. Any missing/invalid policy or unconfigured trust root leaves the extension fail-open.
+
+`scripts/build_core_universal.sh` builds arm64 and x86_64 Rust static libraries and combines them for Xcode. The private policy-signing key must remain in the control-plane signing environment; only the public key belongs in the endpoint binary.
+
+Before production, add authenticated policy rotation/reload and replace the zeroed development trust root.
 
 ## Enterprise rollout
 
