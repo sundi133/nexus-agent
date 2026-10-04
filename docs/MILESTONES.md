@@ -103,7 +103,7 @@ Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS de
 
 
 ## M8 — AI agent / MCP action telemetry
-Status: normalized event model and authenticated localhost ingestion bridge implemented; tool-specific authorization/blocking remains.
+Status: normalized event model, authenticated localhost bridge, signed MCP/tool/action selectors, synchronous local allow/alert/deny decisions, decision audit spooling, and hot policy refresh are implemented. Producer-side integrations and stronger producer identity/attestation remain.
 
 - normalized `AgentActionEvent` for MCP tool calls, resource reads, agent commands, browser actions, network requests, and file operations
 - strict size/cardinality validation and JSON schema
@@ -112,7 +112,9 @@ Status: normalized event model and authenticated localhost ingestion bridge impl
 - 64 KiB request-body cap and 16 KiB header cap
 - no raw prompt or raw tool-argument capture by default
 - accepted actions use the same durable spool/control-plane event path as endpoint telemetry
-- remaining: OS-bound agent identity, signed/local attestation for producers, policy selectors for MCP server/tool/action, and synchronous allow/deny integration with supported agent runtimes
+- signed policy selectors for MCP server, tool, action kind, operation, resource prefix, and risk tags
+- synchronous local allow/alert/deny response without control-plane or model latency
+- remaining: OS-bound agent identity, signed/local attestation for producers, and adapters that enforce the decision inside specific MCP/agent runtimes
 
 
 ## Live policy/control-plane status
