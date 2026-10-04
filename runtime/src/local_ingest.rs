@@ -5,12 +5,26 @@ use serde::Serialize;
 use std::{
     io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
+    path::PathBuf,
     sync::{
         mpsc::Sender,
         Arc, RwLock,
     },
     thread,
     time::Duration,
+};
+
+#[cfg(unix)]
+use std::{
+    fs,
+    os::{
+        fd::AsRawFd,
+        unix::{
+            fs::PermissionsExt,
+            net::{UnixListener, UnixStream},
+        },
+    },
+    path::Path,
 };
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -20,6 +34,8 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 pub struct ProducerCredential {
     pub agent_id: String,
     pub token: String,
+    pub expected_uid: Option<u32>,
+    pub executable_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,10 +44,64 @@ pub enum LocalIngestAuth {
     BoundProducers(Vec<ProducerCredential>),
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ProducerAttestation {
+    pub transport: String,
+    pub credential_bound: bool,
+    pub kernel_peer: bool,
+    pub pid: Option<u32>,
+    pub uid: Option<u32>,
+    pub gid: Option<u32>,
+    pub executable_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentActionAuditRecord {
     pub event: AgentActionEvent,
     pub decision: AgentActionDecision,
+    pub producer_attestation: ProducerAttestation,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PeerIdentity {
+    pid: Option<u32>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+    executable_path: Option<String>,
+    transport: &'static str,
+}
+
+struct AuthenticatedProducer {
+    agent_id: Option<String>,
+    attestation: ProducerAttestation,
+}
+
+trait LocalStream: Read + Write + Sized {
+    fn try_clone_stream(&self) -> io::Result<Self>;
+    fn configure_timeouts(&self) -> io::Result<()>;
+}
+
+impl LocalStream for TcpStream {
+    fn try_clone_stream(&self) -> io::Result<Self> {
+        self.try_clone()
+    }
+
+    fn configure_timeouts(&self) -> io::Result<()> {
+        self.set_read_timeout(Some(Duration::from_secs(2)))?;
+        self.set_write_timeout(Some(Duration::from_secs(2)))
+    }
+}
+
+#[cfg(unix)]
+impl LocalStream for UnixStream {
+    fn try_clone_stream(&self) -> io::Result<Self> {
+        self.try_clone()
+    }
+
+    fn configure_timeouts(&self) -> io::Result<()> {
+        self.set_read_timeout(Some(Duration::from_secs(2)))?;
+        self.set_write_timeout(Some(Duration::from_secs(2)))
+    }
 }
 
 pub fn spawn_local_ingest(
@@ -46,7 +116,11 @@ pub fn spawn_local_ingest(
     Ok(thread::spawn(move || loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                let _ = handle_connection(stream, &auth, &policy, &sender);
+                let peer = PeerIdentity {
+                    transport: "tcp_loopback",
+                    ..PeerIdentity::default()
+                };
+                let _ = handle_connection(stream, &auth, &policy, &sender, peer);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(25));
@@ -58,16 +132,55 @@ pub fn spawn_local_ingest(
     }))
 }
 
-fn handle_connection(
-    mut stream: TcpStream,
+#[cfg(unix)]
+pub fn spawn_local_ingest_unix(
+    socket_path: PathBuf,
+    auth: LocalIngestAuth,
+    policy: Arc<RwLock<Option<PolicyBundle>>>,
+    sender: Sender<AgentActionAuditRecord>,
+) -> io::Result<thread::JoinHandle<()>> {
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::remove_file(&socket_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+
+    let listener = UnixListener::bind(&socket_path)?;
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o660))?;
+    listener.set_nonblocking(true)?;
+
+    Ok(thread::spawn(move || loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let peer = unix_peer_identity(&stream).unwrap_or_else(|_| PeerIdentity {
+                    transport: "unix_socket_unattested",
+                    ..PeerIdentity::default()
+                });
+                let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(25));
+            }
+            Err(_) => {
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }))
+}
+
+fn handle_connection<S: LocalStream>(
+    mut stream: S,
     auth: &LocalIngestAuth,
     policy: &Arc<RwLock<Option<PolicyBundle>>>,
     sender: &Sender<AgentActionAuditRecord>,
+    peer: PeerIdentity,
 ) -> io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    stream.configure_timeouts()?;
 
-    let cloned = stream.try_clone()?;
+    let cloned = stream.try_clone_stream()?;
     let mut reader = BufReader::new(cloned);
 
     let mut request_line = String::new();
@@ -93,9 +206,7 @@ fn handle_connection(
             return write_error_response(&mut stream, 431, "headers too large");
         }
 
-        if line == "
-" || line == "
-" {
+        if line == "\r\n" || line == "\n" {
             break;
         }
 
@@ -124,8 +235,8 @@ fn handle_connection(
     let Some(supplied_token) = supplied_token else {
         return write_error_response(&mut stream, 401, "unauthorized");
     };
-    let Some(authenticated_agent_id) = authenticate_producer(auth, supplied_token) else {
-        return write_error_response(&mut stream, 401, "unauthorized");
+    let Some(authenticated) = authenticate_producer(auth, supplied_token, &peer) else {
+        return write_error_response(&mut stream, 401, "unauthorized or producer attestation failed");
     };
 
     let Some(body_len) = content_length else {
@@ -146,33 +257,39 @@ fn handle_connection(
         return write_error_response(&mut stream, 422, "invalid agent action");
     }
 
-    match authenticated_agent_id {
-        Some(bound_agent_id) => {
-            if event
-                .agent_id
-                .as_deref()
-                .is_some_and(|claimed| claimed != bound_agent_id)
-            {
-                return write_error_response(
-                    &mut stream,
-                    403,
-                    "agent identity does not match producer credential",
-                );
-            }
-            event.agent_id = Some(bound_agent_id.to_string());
+    if let Some(bound_agent_id) = authenticated.agent_id.as_deref() {
+        if event
+            .agent_id
+            .as_deref()
+            .is_some_and(|claimed| claimed != bound_agent_id)
+        {
+            return write_error_response(
+                &mut stream,
+                403,
+                "agent identity does not match producer credential",
+            );
         }
-        None => {
-            // Legacy shared-token mode authenticates bridge access only. It does
-            // not establish agent identity, so self-reported identity cannot
-            // participate in signed agent_id policy selectors.
-            event.agent_id = None;
+        event.agent_id = Some(bound_agent_id.to_string());
+    } else {
+        event.agent_id = None;
+    }
+
+    if let Some(peer_pid) = authenticated.attestation.pid {
+        if event.pid.is_some_and(|claimed| claimed != peer_pid) {
+            return write_error_response(
+                &mut stream,
+                403,
+                "process identity does not match kernel peer credentials",
+            );
         }
+        event.pid = Some(peer_pid);
     }
 
     let decision = decide_agent_action(policy, &event);
     let audit = AgentActionAuditRecord {
         event,
         decision: decision.clone(),
+        producer_attestation: authenticated.attestation,
     };
 
     if sender.send(audit).is_err() && decision.action != DecisionAction::Deny {
@@ -210,30 +327,122 @@ fn fail_open_decision(reason: &str) -> AgentActionDecision {
     }
 }
 
-fn authenticate_producer<'a>(
-    auth: &'a LocalIngestAuth,
+fn authenticate_producer(
+    auth: &LocalIngestAuth,
     supplied_token: &str,
-) -> Option<Option<&'a str>> {
+    peer: &PeerIdentity,
+) -> Option<AuthenticatedProducer> {
     match auth {
         LocalIngestAuth::LegacyToken(token) => constant_time_eq(
             supplied_token.as_bytes(),
             token.as_bytes(),
         )
-        .then_some(None),
+        .then(|| AuthenticatedProducer {
+            agent_id: None,
+            attestation: attestation_from_peer(peer, false),
+        }),
         LocalIngestAuth::BoundProducers(producers) => {
-            let mut matched: Option<&str> = None;
+            let mut matched: Option<&ProducerCredential> = None;
             for producer in producers {
-                let is_match = constant_time_eq(
+                if constant_time_eq(
                     supplied_token.as_bytes(),
                     producer.token.as_bytes(),
-                );
-                if is_match {
-                    matched = Some(producer.agent_id.as_str());
+                ) {
+                    matched = Some(producer);
                 }
             }
-            matched.map(Some)
+
+            let producer = matched?;
+            if producer
+                .expected_uid
+                .is_some_and(|expected| peer.uid != Some(expected))
+            {
+                return None;
+            }
+
+            if !producer.executable_paths.is_empty() {
+                let peer_path = peer.executable_path.as_deref()?;
+                if !producer
+                    .executable_paths
+                    .iter()
+                    .any(|candidate| candidate.to_string_lossy() == peer_path)
+                {
+                    return None;
+                }
+            }
+
+            Some(AuthenticatedProducer {
+                agent_id: Some(producer.agent_id.clone()),
+                attestation: attestation_from_peer(peer, true),
+            })
         }
     }
+}
+
+fn attestation_from_peer(peer: &PeerIdentity, credential_bound: bool) -> ProducerAttestation {
+    ProducerAttestation {
+        transport: peer.transport.to_string(),
+        credential_bound,
+        kernel_peer: peer.uid.is_some() || peer.pid.is_some(),
+        pid: peer.pid,
+        uid: peer.uid,
+        gid: peer.gid,
+        executable_path: peer.executable_path.clone(),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
+    let fd = stream.as_raw_fd();
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut length = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut length,
+        )
+    };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let pid = u32::try_from(credentials.pid).ok();
+    let executable_path = pid.and_then(|pid| {
+        fs::read_link(format!("/proc/{pid}/exe"))
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+    });
+
+    Ok(PeerIdentity {
+        pid,
+        uid: Some(credentials.uid),
+        gid: Some(credentials.gid),
+        executable_path,
+        transport: "unix_socket_linux_peercred",
+    })
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
+    let fd = stream.as_raw_fd();
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    let result = unsafe { libc::getpeereid(fd, &mut uid, &mut gid) };
+    if result != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(PeerIdentity {
+        pid: None,
+        uid: Some(uid),
+        gid: Some(gid),
+        executable_path: None,
+        transport: "unix_socket_peer_eid",
+    })
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -247,8 +456,8 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     difference == 0
 }
 
-fn write_decision_response(
-    stream: &mut TcpStream,
+fn write_decision_response<W: Write>(
+    stream: &mut W,
     status: u16,
     decision: &AgentActionDecision,
 ) -> io::Result<()> {
@@ -257,19 +466,18 @@ fn write_decision_response(
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}
-Content-Type: application/json
-Content-Length: {}
-Connection: close
-
-{}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     )?;
     stream.flush()
 }
 
-fn write_error_response(stream: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
+fn write_error_response<W: Write>(
+    stream: &mut W,
+    status: u16,
+    message: &str,
+) -> io::Result<()> {
     let reason = match status {
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -290,12 +498,7 @@ fn write_error_response(stream: &mut TcpStream, status: u16, message: &str) -> i
     .to_string();
     write!(
         stream,
-        "HTTP/1.1 {status} {reason}
-Content-Type: application/json
-Content-Length: {}
-Connection: close
-
-{}",
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     )?;
@@ -357,30 +560,48 @@ mod tests {
     #[test]
     fn legacy_token_authenticates_without_agent_identity() {
         let auth = LocalIngestAuth::LegacyToken("a".repeat(32));
-        assert_eq!(
-            authenticate_producer(&auth, &"a".repeat(32)),
-            Some(None)
-        );
-        assert_eq!(authenticate_producer(&auth, &"b".repeat(32)), None);
+        let peer = PeerIdentity {
+            transport: "tcp_loopback",
+            ..PeerIdentity::default()
+        };
+        let authenticated =
+            authenticate_producer(&auth, &"a".repeat(32), &peer).unwrap();
+        assert!(authenticated.agent_id.is_none());
+        assert!(!authenticated.attestation.kernel_peer);
+        assert!(authenticate_producer(&auth, &"b".repeat(32), &peer).is_none());
     }
 
     #[test]
-    fn bound_producer_token_returns_configured_agent_identity() {
-        let auth = LocalIngestAuth::BoundProducers(vec![
-            ProducerCredential {
-                agent_id: "agent-a".into(),
-                token: "a".repeat(32),
-            },
-            ProducerCredential {
-                agent_id: "agent-b".into(),
-                token: "b".repeat(32),
-            },
-        ]);
-        assert_eq!(
-            authenticate_producer(&auth, &"b".repeat(32)),
-            Some(Some("agent-b"))
-        );
-        assert_eq!(authenticate_producer(&auth, &"c".repeat(32)), None);
+    fn bound_producer_enforces_peer_uid_and_executable() {
+        let auth = LocalIngestAuth::BoundProducers(vec![ProducerCredential {
+            agent_id: "agent-b".into(),
+            token: "b".repeat(32),
+            expected_uid: Some(1000),
+            executable_paths: vec!["/usr/local/bin/agent-b".into()],
+        }]);
+        let peer = PeerIdentity {
+            pid: Some(44),
+            uid: Some(1000),
+            gid: Some(1000),
+            executable_path: Some("/usr/local/bin/agent-b".into()),
+            transport: "unix_socket_linux_peercred",
+        };
+        let authenticated =
+            authenticate_producer(&auth, &"b".repeat(32), &peer).unwrap();
+        assert_eq!(authenticated.agent_id.as_deref(), Some("agent-b"));
+        assert!(authenticated.attestation.kernel_peer);
+
+        let wrong_uid = PeerIdentity {
+            uid: Some(1001),
+            ..peer.clone()
+        };
+        assert!(authenticate_producer(&auth, &"b".repeat(32), &wrong_uid).is_none());
+
+        let wrong_exe = PeerIdentity {
+            executable_path: Some("/tmp/other".into()),
+            ..peer
+        };
+        assert!(authenticate_producer(&auth, &"b".repeat(32), &wrong_exe).is_none());
     }
 
     #[test]
@@ -397,11 +618,21 @@ mod tests {
         tx.send(AgentActionAuditRecord {
             event,
             decision,
+            producer_attestation: ProducerAttestation {
+                transport: "test".into(),
+                credential_bound: true,
+                kernel_peer: true,
+                pid: Some(42),
+                uid: Some(1000),
+                gid: Some(1000),
+                executable_path: Some("/usr/bin/test".into()),
+            },
         })
         .unwrap();
         let record = rx.recv().unwrap();
         assert_eq!(record.decision.action, DecisionAction::Alert);
         assert!(record.decision.would_deny);
+        assert!(record.producer_attestation.kernel_peer);
     }
 
     #[test]
