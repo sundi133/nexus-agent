@@ -18,6 +18,7 @@
 #include "nexus_core.h"
 
 #define POLICY_PATH "/Library/Application Support/Votal/Nexus/policy.signed.json"
+#define POLICY_PUBLIC_KEY_B64_PATH "/Library/Application Support/Votal/NexusRuntime/policy-public-key.b64"
 #define POLICY_VERSION_PATH "/Library/Application Support/Votal/Nexus/policy.version"
 #define HEALTH_PATH "/Library/Application Support/Votal/Nexus/health.json"
 #define EVENTS_PATH "/Library/Application Support/Votal/Nexus/events.jsonl"
@@ -259,12 +260,6 @@ static unsigned char *read_file(const char *path, size_t *length) {
 }
 
 static NexusPolicyHandle *read_verified_policy(void) {
-    if (!trust_root_configured()) {
-        os_log_error(g_log,
-                     "policy trust root is not configured; extension remains allow-only");
-        return NULL;
-    }
-
     size_t envelope_length = 0;
     unsigned char *envelope = read_file(POLICY_PATH, &envelope_length);
     if (envelope == NULL) {
@@ -274,11 +269,26 @@ static NexusPolicyHandle *read_verified_policy(void) {
         return NULL;
     }
 
-    NexusPolicyHandle *verified = nexus_policy_from_signed_json(
-        envelope,
-        envelope_length,
-        NEXUS_POLICY_PUBLIC_KEY,
-        sizeof(NEXUS_POLICY_PUBLIC_KEY));
+    NexusPolicyHandle *verified = NULL;
+
+    size_t key_b64_length = 0;
+    unsigned char *key_b64 =
+        read_file(POLICY_PUBLIC_KEY_B64_PATH, &key_b64_length);
+    if (key_b64 != NULL) {
+        verified = nexus_policy_from_signed_json_with_public_key_b64(
+            envelope,
+            envelope_length,
+            key_b64,
+            key_b64_length);
+        free(key_b64);
+    } else if (trust_root_configured()) {
+        verified = nexus_policy_from_signed_json(
+            envelope,
+            envelope_length,
+            NEXUS_POLICY_PUBLIC_KEY,
+            sizeof(NEXUS_POLICY_PUBLIC_KEY));
+    }
+
     free(envelope);
 
     if (verified == NULL) {
