@@ -153,6 +153,14 @@
         "null"
       ],
       "minLength": 1
+    },
+    "local_ingest_pipe_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 240
     }
   },
   "additionalProperties": false
