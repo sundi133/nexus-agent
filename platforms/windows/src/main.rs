@@ -19,7 +19,7 @@ mod service {
         plan_ransomware_response, verify_signed_policy, AgentHealth, CapabilityState,
         DecisionAction, DetectionConfig, EnforcementMode, EventKind, PolicyBundle,
         RansomwareAssessment, RansomwareResponseAction, RansomwareResponseDecision,
-        RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
+        RansomwareTracker, ResponseMode, SecurityEvent, SignedPolicyEnvelope,
     };
     use std::{
         collections::{HashMap, HashSet},
@@ -520,6 +520,65 @@ mod service {
     }
 
 
+    fn ransomware_response_health(
+        policy: Option<&PolicyBundle>,
+    ) -> (CapabilityState, String) {
+        let Some(policy) = policy else {
+            return (
+                CapabilityState::Unavailable,
+                "no verified policy; ransomware response unavailable".to_string(),
+            );
+        };
+        let Some(response) = policy.ransomware_response.as_ref() else {
+            return (
+                CapabilityState::Unavailable,
+                "no ransomware response configured".to_string(),
+            );
+        };
+
+        match response.mode {
+            ResponseMode::Disabled => (
+                CapabilityState::Unavailable,
+                "ransomware response disabled by signed policy".to_string(),
+            ),
+            ResponseMode::Shadow => (
+                CapabilityState::Shadow,
+                format!(
+                    "shadow response action={:?} min_score={} require_context={}",
+                    response.action,
+                    response.min_score,
+                    response.require_suspicious_process_context
+                ),
+            ),
+            ResponseMode::Enforce => {
+                if Path::new(CONTAINMENT_DISABLE_PATH).exists() {
+                    (
+                        CapabilityState::Shadow,
+                        "signed response is enforce-mode but local containment disable switch is present"
+                            .to_string(),
+                    )
+                } else if response.action == RansomwareResponseAction::TerminateProcess {
+                    (
+                        CapabilityState::Active,
+                        format!(
+                            "signed terminate-process response active min_score={} require_context={}",
+                            response.min_score,
+                            response.require_suspicious_process_context
+                        ),
+                    )
+                } else {
+                    (
+                        CapabilityState::Shadow,
+                        format!(
+                            "signed response action {:?} is not yet executable by Windows ransomware containment",
+                            response.action
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
     fn build_health(
         policy: Option<&PolicyBundle>,
         telemetry_state: CapabilityState,
@@ -575,6 +634,11 @@ mod service {
                 } else {
                     "Kernel-File path telemetry unavailable; ransomware correlation disabled"
                 },
+            )
+            .with_capability(
+                "ransomware_response",
+                ransomware_response_health(policy).0,
+                ransomware_response_health(policy).1,
             )
     }
 
