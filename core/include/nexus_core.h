@@ -49,6 +49,12 @@ NexusPolicyHandle *nexus_policy_from_signed_json(
     const uint8_t *public_key_ptr,
     size_t public_key_len);
 
+NexusPolicyHandle *nexus_policy_from_signed_json_with_public_key_b64(
+    const uint8_t *envelope_ptr,
+    size_t envelope_len,
+    const uint8_t *public_key_b64_ptr,
+    size_t public_key_b64_len);
+
 void nexus_policy_free(NexusPolicyHandle *handle);
 uint64_t nexus_policy_version(const NexusPolicyHandle *handle);
 
