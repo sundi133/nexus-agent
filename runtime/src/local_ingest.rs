@@ -576,7 +576,7 @@ fn authenticate_producer(
                 if !producer
                     .executable_paths
                     .iter()
-                    .any(|candidate| candidate.to_string_lossy() == peer_path)
+                    .any(|candidate| executable_path_matches(candidate, peer_path))
                 {
                     return None;
                 }
@@ -587,6 +587,18 @@ fn authenticate_producer(
                 attestation: attestation_from_peer(peer, true),
             })
         }
+    }
+}
+
+fn executable_path_matches(candidate: &std::path::Path, peer_path: &str) -> bool {
+    let candidate = candidate.to_string_lossy();
+    #[cfg(windows)]
+    {
+        candidate.eq_ignore_ascii_case(peer_path)
+    }
+    #[cfg(not(windows))]
+    {
+        candidate == peer_path
     }
 }
 
@@ -836,6 +848,21 @@ mod tests {
             assert_eq!(peer.pid, Some(std::process::id()));
             assert!(peer.executable_path.is_some());
         }
+    }
+
+    #[test]
+    fn executable_path_match_uses_platform_semantics() {
+        #[cfg(windows)]
+        assert!(executable_path_matches(
+            std::path::Path::new(r"C:\Program Files\Agent\agent.exe"),
+            r"c:\program files\agent\AGENT.EXE",
+        ));
+
+        #[cfg(not(windows))]
+        assert!(!executable_path_matches(
+            std::path::Path::new("/usr/local/bin/Agent"),
+            "/usr/local/bin/agent",
+        ));
     }
 
     #[test]
