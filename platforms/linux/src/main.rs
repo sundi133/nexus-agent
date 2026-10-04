@@ -10,10 +10,9 @@ mod linux_agent {
         ffi::CString,
         fs::{read_link, OpenOptions},
         io::{self, Write},
-        mem::{size_of, zeroed},
+        mem::size_of,
         os::fd::RawFd,
         path::PathBuf,
-        slice,
         time::Duration,
     };
     use time::{format_description::well_known::Rfc3339, OffsetDateTime};
@@ -59,7 +58,7 @@ mod linux_agent {
         let fan_fd = unsafe {
             libc::fanotify_init(
                 libc::FAN_CLASS_NOTIF | libc::FAN_CLOEXEC | libc::FAN_NONBLOCK,
-                libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC,
+                (libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC) as u32,
             )
         };
         if fan_fd < 0 {
