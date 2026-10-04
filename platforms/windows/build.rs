@@ -14,4 +14,5 @@ fn main() {
     println!("cargo:rustc-link-lib=fwpuclnt");
     println!("cargo:rustc-link-lib=ws2_32");
     println!("cargo:rustc-link-lib=rpcrt4");
+    println!("cargo:rustc-link-lib=uuid");
 }
