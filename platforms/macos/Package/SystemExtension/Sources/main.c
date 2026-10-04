@@ -14,6 +14,8 @@
 #include "nexus_core.h"
 
 #define POLICY_PATH "/Library/Application Support/Votal/Nexus/policy.signed.json"
+#define POLICY_VERSION_PATH "/Library/Application Support/Votal/Nexus/policy.version"
+#define HEALTH_PATH "/Library/Application Support/Votal/Nexus/health.json"
 #define MAX_POLICY_BYTES (1024 * 1024)
 
 static os_log_t g_log;
@@ -109,6 +111,69 @@ static uint64_t monotonic_ms(void) {
     return ((uint64_t)ts.tv_sec * 1000ULL) + ((uint64_t)ts.tv_nsec / 1000000ULL);
 }
 
+static uint64_t read_policy_watermark(void) {
+    FILE *file = fopen(POLICY_VERSION_PATH, "r");
+    if (file == NULL) {
+        return 0;
+    }
+
+    unsigned long long value = 0;
+    int parsed = fscanf(file, "%llu", &value);
+    fclose(file);
+    return parsed == 1 ? (uint64_t)value : 0;
+}
+
+static bool write_policy_watermark(uint64_t version) {
+    FILE *file = fopen(POLICY_VERSION_PATH, "w");
+    if (file == NULL) {
+        return false;
+    }
+    int written = fprintf(file, "%llu\n", (unsigned long long)version);
+    bool ok = written > 0 && fclose(file) == 0;
+    return ok;
+}
+
+static void write_health_file(void) {
+    pthread_rwlock_rdlock(&g_policy_lock);
+    uint64_t policy_version =
+        g_policy == NULL ? 0 : nexus_policy_version(g_policy);
+    pthread_rwlock_unlock(&g_policy_lock);
+
+    bool kill_switch =
+        atomic_load_explicit(&g_kill_switch, memory_order_relaxed);
+
+    FILE *file = fopen(HEALTH_PATH, "w");
+    if (file == NULL) {
+        os_log_error(g_log, "cannot write health file at %{public}s", HEALTH_PATH);
+        return;
+    }
+
+    fprintf(
+        file,
+        "{\n"
+        "  \"schema_version\": 1,\n"
+        "  \"platform\": \"macos\",\n"
+        "  \"policy_version\": ");
+    if (policy_version == 0) {
+        fputs("null", file);
+    } else {
+        fprintf(file, "%llu", (unsigned long long)policy_version);
+    }
+    fprintf(
+        file,
+        ",\n"
+        "  \"kill_switch_engaged\": %s,\n"
+        "  \"capabilities\": [\n"
+        "    {\"name\":\"endpoint_security\",\"state\":\"active\",\"detail\":\"Endpoint Security system extension subscribed\"},\n"
+        "    {\"name\":\"process_enforcement\",\"state\":\"%s\",\"detail\":\"AUTH_EXEC local signed-policy enforcement\"},\n"
+        "    {\"name\":\"ransomware_detection\",\"state\":\"shadow\",\"detail\":\"unique-path file behavior correlation; detection only\"}\n"
+        "  ]\n"
+        "}\n",
+        kill_switch ? "true" : "false",
+        policy_version == 0 || kill_switch ? "shadow" : "active");
+    fclose(file);
+}
+
 static bool reload_verified_policy(void) {
     NexusPolicyHandle *verified = read_verified_policy();
     if (verified == NULL) {
@@ -118,17 +183,20 @@ static bool reload_verified_policy(void) {
     }
 
     uint64_t candidate_version = nexus_policy_version(verified);
+    uint64_t persisted_version = read_policy_watermark();
 
     pthread_rwlock_wrlock(&g_policy_lock);
     uint64_t current_version =
         g_policy == NULL ? 0 : nexus_policy_version(g_policy);
+    uint64_t minimum_version =
+        current_version > persisted_version ? current_version : persisted_version;
 
-    if (current_version > 0 && candidate_version < current_version) {
+    if (minimum_version > 0 && candidate_version < minimum_version) {
         pthread_rwlock_unlock(&g_policy_lock);
         nexus_policy_free(verified);
         os_log_error(g_log,
-                     "policy downgrade rejected current=%{public}llu candidate=%{public}llu",
-                     (unsigned long long)current_version,
+                     "policy downgrade rejected minimum=%{public}llu candidate=%{public}llu",
+                     (unsigned long long)minimum_version,
                      (unsigned long long)candidate_version);
         return false;
     }
@@ -142,6 +210,12 @@ static bool reload_verified_policy(void) {
         nexus_policy_free(previous);
     }
 
+    if (!write_policy_watermark(version)) {
+        os_log_error(g_log,
+                     "failed persisting policy version watermark; retaining policy in memory");
+    }
+    write_health_file();
+
     os_log(g_log,
            "activated verified endpoint policy version %{public}llu",
            (unsigned long long)version);
@@ -151,11 +225,13 @@ static bool reload_verified_policy(void) {
 static void set_kill_switch(int signo) {
     (void)signo;
     atomic_store_explicit(&g_kill_switch, true, memory_order_relaxed);
+    atomic_store_explicit(&g_reload_requested, true, memory_order_relaxed);
 }
 
 static void clear_kill_switch(int signo) {
     (void)signo;
     atomic_store_explicit(&g_kill_switch, false, memory_order_relaxed);
+    atomic_store_explicit(&g_reload_requested, true, memory_order_relaxed);
 }
 
 static void request_policy_reload(int signo) {
@@ -335,6 +411,7 @@ int main(void) {
                                      false,
                                      memory_order_relaxed)) {
             (void)reload_verified_policy();
+            write_health_file();
         }
     });
     dispatch_resume(reload_timer);
@@ -342,6 +419,8 @@ int main(void) {
     pthread_rwlock_rdlock(&g_policy_lock);
     bool policy_loaded = g_policy != NULL;
     pthread_rwlock_unlock(&g_policy_lock);
+
+    write_health_file();
 
     os_log(g_log,
            "Nexus Endpoint Security extension started; policy_loaded=%{public}s; SIGHUP reloads policy",
