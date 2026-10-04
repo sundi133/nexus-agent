@@ -5,7 +5,11 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux_agent {
-    use nexus_agent_core::{verify_signed_policy, AgentHealth, CapabilityState, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
+    use nexus_agent_core::{
+        verify_signed_policy, AgentHealth, CapabilityState, DetectionConfig, EventKind,
+        PolicyBundle, RansomwareAssessment, RansomwareTracker, SecurityEvent,
+        SignedPolicyEnvelope,
+    };
     use std::{
         ffi::CString,
         fs::{read_link, OpenOptions},
@@ -13,7 +17,7 @@ mod linux_agent {
         mem::size_of,
         os::fd::RawFd,
         path::PathBuf,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
@@ -34,6 +38,8 @@ mod linux_agent {
         );
         let _ = write_health(&build_health(policy.as_ref()));
 
+        let started = Instant::now();
+        let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
         loop {
@@ -60,7 +66,12 @@ mod linux_agent {
                 continue;
             }
 
-            parse_events(&buffer[..read_count as usize], policy.as_ref())?;
+            parse_events(
+                &buffer[..read_count as usize],
+                policy.as_ref(),
+                &mut ransomware_tracker,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            )?;
         }
     }
 
@@ -100,7 +111,12 @@ mod linux_agent {
         Ok(fan_fd)
     }
 
-    fn parse_events(buffer: &[u8], policy: Option<&PolicyBundle>) -> io::Result<()> {
+    fn parse_events(
+        buffer: &[u8],
+        policy: Option<&PolicyBundle>,
+        ransomware_tracker: &mut RansomwareTracker,
+        now_ms: u64,
+    ) -> io::Result<()> {
         let mut offset = 0usize;
 
         while offset + size_of::<libc::fanotify_event_metadata>() <= buffer.len() {
@@ -130,7 +146,26 @@ mod linux_agent {
                 };
 
                 if let Some(kind) = kind {
-                    let _ = emit_event(metadata.pid as u32, kind, target_path, policy);
+                    let ransomware = if matches!(kind, EventKind::FileWrite) {
+                        target_path.as_deref().map(|path| {
+                            ransomware_tracker.observe_path(
+                                metadata.pid as u32,
+                                now_ms,
+                                path,
+                                false,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+
+                    let _ = emit_event(
+                        metadata.pid as u32,
+                        kind,
+                        target_path,
+                        policy,
+                        ransomware,
+                    );
                 }
 
                 unsafe { libc::close(metadata.fd) };
@@ -167,6 +202,11 @@ mod linux_agent {
                 "filesystem_telemetry",
                 CapabilityState::Active,
                 "fanotify notification mode: executable-open and close-write",
+            )
+            .with_capability(
+                "ransomware_detection",
+                CapabilityState::Shadow,
+                "unique-path close-write correlation enabled; detection only, no process termination",
             )
             .with_capability(
                 "execution_policy",
@@ -235,7 +275,13 @@ mod linux_agent {
             .map(|path| path.to_string_lossy().into_owned())
     }
 
-    fn emit_event(pid: u32, kind: EventKind, path: Option<String>, policy: Option<&PolicyBundle>) -> io::Result<()> {
+    fn emit_event(
+        pid: u32,
+        kind: EventKind,
+        path: Option<String>,
+        policy: Option<&PolicyBundle>,
+        ransomware: Option<RansomwareAssessment>,
+    ) -> io::Result<()> {
         let now = OffsetDateTime::now_utc();
         let timestamp = now
             .format(&Rfc3339)
@@ -278,7 +324,8 @@ mod linux_agent {
                 "policy_version": decision.policy_version,
                 "decision": format!("{:?}", decision.action).to_lowercase(),
                 "would_deny": decision.would_deny,
-                "enforcement": "shadow"
+                "enforcement": "shadow",
+                "ransomware": ransomware
             })
         } else {
             serde_json::json!({
@@ -286,7 +333,8 @@ mod linux_agent {
                 "policy_version": null,
                 "decision": "allow",
                 "would_deny": false,
-                "enforcement": "telemetry_only"
+                "enforcement": "telemetry_only",
+                "ransomware": ransomware
             })
         };
         serde_json::to_writer(&mut file, &record)?;
