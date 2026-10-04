@@ -2,11 +2,10 @@ use nexus_agent_core::{AgentActionDecision, AgentActionEvent};
 use std::{
     io::{BufReader, Read, Write},
     net::TcpStream,
-    path::PathBuf,
 };
 
 #[cfg(unix)]
-use std::os::unix::net::UnixStream;
+use std::{os::unix::net::UnixStream, path::PathBuf};
 
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
