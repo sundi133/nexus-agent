@@ -25,7 +25,11 @@ Health is not part of synchronous enforcement. Failure to report health must not
 
 ## Events
 
-HTTPS POST with content type `application/x-ndjson`. A successful HTTP status acknowledges the uploaded disk-spool segment. Timeouts and non-success statuses leave the segment for retry.
+HTTPS POST with content type `application/x-ndjson`.
+
+Every upload includes a stable `X-Nexus-Batch-Id` derived from the durable spool segment name. The same segment keeps the same batch ID across retries. The control plane should make event ingestion idempotent on `(device_id, batch_id)` and may additionally deduplicate individual records by their `event_id`.
+
+A successful HTTP status acknowledges the uploaded disk-spool segment. Only after that acknowledgement does the endpoint delete the segment. Timeouts and non-success statuses leave the same segment and batch ID for retry.
 
 ## Authentication and enrollment
 
