@@ -65,13 +65,69 @@ mod linux_agent {
                 if let Some(candidate) = load_newer_verified_policy(
                     policy.as_ref().map(|value| value.version),
                 ) {
-                    let (candidate_lease, candidate_state, candidate_detail) =
-                        configure_network_enforcement(Some(&candidate));
+                    let candidate_version = candidate.version;
 
-                    network_lease = candidate_lease;
-                    network_state = candidate_state;
-                    network_detail = candidate_detail;
-                    policy = Some(candidate);
+                    match select_network_plan(&candidate) {
+                        Ok(plans) if plans.is_empty() => {
+                            network_lease.take();
+                            network_state = CapabilityState::Shadow;
+                            network_detail = if candidate.mode
+                                == nexus_agent_core::EnforcementMode::Audit
+                            {
+                                "policy is audit mode; nftables runtime rules intentionally not installed"
+                                    .to_string()
+                            } else {
+                                "no supported exact-IPv4 deny network rules configured".to_string()
+                            };
+                            policy = Some(candidate);
+                        }
+                        Err(detail) => {
+                            network_lease.take();
+                            network_state = CapabilityState::Shadow;
+                            network_detail = detail;
+                            policy = Some(candidate);
+                        }
+                        Ok(plans) => {
+                            let apply_result = if let Some(lease) = network_lease.as_mut() {
+                                lease.replace(plans).map(|_| ())
+                            } else {
+                                NftLease::start(plans).map(|lease| {
+                                    network_lease = Some(lease);
+                                })
+                            };
+
+                            match apply_result {
+                                Ok(()) => {
+                                    network_state = CapabilityState::Active;
+                                    network_detail = network_lease
+                                        .as_ref()
+                                        .map(|lease| lease.detail())
+                                        .unwrap_or_else(|| {
+                                            "nftables enforcement active".to_string()
+                                        });
+                                    policy = Some(candidate);
+                                }
+                                Err(error) => {
+                                    network_detail = format!(
+                                        "last-known-good nftables enforcement retained; candidate policy version={} not activated: {}",
+                                        candidate_version,
+                                        error,
+                                    );
+                                    let _ = write_health(&build_health(
+                                        policy.as_ref(),
+                                        network_state,
+                                        &network_detail,
+                                    ));
+                                    eprintln!(
+                                        "nexus-agent-linux: {}",
+                                        network_detail
+                                    );
+                                    last_policy_check = Instant::now();
+                                    continue;
+                                }
+                            }
+                        }
+                    }
 
                     let _ = write_health(&build_health(
                         policy.as_ref(),
