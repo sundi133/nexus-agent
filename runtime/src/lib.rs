@@ -17,3 +17,6 @@ pub use source::{IngestStats, JsonlTailer};
 pub use local_ingest::{spawn_local_ingest, AgentActionAuditRecord, LocalIngestAuth, ProducerAttestation, ProducerCredential};
 #[cfg(unix)]
 pub use local_ingest::spawn_local_ingest_unix;
+
+#[cfg(windows)]
+pub use local_ingest::spawn_local_ingest_windows_pipe;
