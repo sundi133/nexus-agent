@@ -36,6 +36,10 @@ impl DeviceCredential {
     pub fn validate(&self) -> Result<(), DeviceCredentialError> {
         if self.device_id.is_empty()
             || self.device_id.len() > 256
+            || !self
+                .device_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b':'))
             || self.bearer_token.len() < 16
             || self.bearer_token.len() > 16 * 1024
             || self
@@ -131,6 +135,16 @@ mod tests {
         let path = dir.path().join("device.json");
         atomic_write_device_credential(&path, &credential()).unwrap();
         assert_eq!(load_device_credential(&path).unwrap(), credential());
+    }
+
+    #[test]
+    fn rejects_unsafe_device_id() {
+        let mut value = credential();
+        value.device_id = "bad device\nheader".into();
+        assert!(matches!(
+            value.validate(),
+            Err(DeviceCredentialError::InvalidFields)
+        ));
     }
 
     #[test]
