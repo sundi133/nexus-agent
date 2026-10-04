@@ -114,7 +114,10 @@ Status: normalized event model, authenticated localhost bridge, signed MCP/tool/
 - accepted actions use the same durable spool/control-plane event path as endpoint telemetry
 - signed policy selectors for MCP server, tool, action kind, operation, resource prefix, and risk tags
 - synchronous local allow/alert/deny response without control-plane or model latency
-- remaining: OS-bound agent identity, signed/local attestation for producers, and adapters that enforce the decision inside specific MCP/agent runtimes
+- credential-bound producer identities with anti-spoofing
+- Linux Unix-socket kernel peer attestation (PID/UID/GID/executable path)
+- macOS Unix-socket peer UID/GID attestation
+- remaining: macOS code-signature/process attestation, Windows named-pipe client-process attestation, and adapters that enforce decisions inside specific MCP/agent runtimes
 
 
 ## Live policy/control-plane status
