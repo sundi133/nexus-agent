@@ -2,6 +2,7 @@ pub mod action_client;
 mod credentials;
 pub use credentials::read_secret_file;
 pub mod config;
+pub mod device_credential;
 pub mod http;
 pub mod local_ingest;
 pub mod mcp;
@@ -28,3 +29,5 @@ pub use local_ingest::spawn_local_ingest_windows_pipe;
 pub use action_client::{authorize_action, AgentActionClient, LocalAuthorizationTarget};
 
 pub use mcp::normalize_mcp_action;
+
+pub use device_credential::{atomic_write_device_credential, load_device_credential, DeviceCredential, DeviceCredentialError};
