@@ -19,8 +19,7 @@
       "required": [
         "policy_url",
         "health_url",
-        "events_url",
-        "bearer_token_file"
+        "events_url"
       ],
       "properties": {
         "policy_url": {
@@ -39,7 +38,10 @@
           "pattern": "^https://"
         },
         "bearer_token_file": {
-          "type": "string",
+          "type": [
+            "string",
+            "null"
+          ],
           "minLength": 1
         },
         "connect_timeout_ms": {
@@ -49,9 +51,38 @@
         "request_timeout_ms": {
           "type": "integer",
           "minimum": 1
+        },
+        "device_credential_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "bearer_token_file"
+          ],
+          "properties": {
+            "device_credential_file": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "required": [
+            "device_credential_file"
+          ],
+          "properties": {
+            "bearer_token_file": {
+              "type": "null"
+            }
+          }
+        }
+      ]
     },
     "spool_dir": {
       "type": "string",
