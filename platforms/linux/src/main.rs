@@ -173,10 +173,31 @@ mod linux_agent {
                 };
 
                 if let Some(kind) = kind {
+                    let pid = metadata.pid as u32;
+
+                    if matches!(kind, EventKind::ProcessExec) {
+                        if let (Some(policy), Some(path)) = (policy, target_path.as_deref()) {
+                            let exec_event = SecurityEvent {
+                                event_id: "linux-exec-context".into(),
+                                timestamp: String::new(),
+                                device_id: String::new(),
+                                kind: EventKind::ProcessExec,
+                                pid: Some(pid),
+                                parent_pid: None,
+                                executable_path: Some(path.to_string()),
+                                target_path: None,
+                                destination_host: None,
+                            };
+                            if policy.evaluate(&exec_event).would_deny {
+                                ransomware_tracker.mark_suspicious_process(pid, now_ms);
+                            }
+                        }
+                    }
+
                     let ransomware = if matches!(kind, EventKind::FileWrite) {
                         target_path.as_deref().map(|path| {
                             ransomware_tracker.observe_path(
-                                metadata.pid as u32,
+                                pid,
                                 now_ms,
                                 path,
                                 false,
@@ -186,12 +207,22 @@ mod linux_agent {
                         None
                     };
 
+                    let ransomware_response = match (&ransomware, policy) {
+                        (Some(assessment), Some(policy)) => ransomware_tracker
+                            .features_for(pid)
+                            .and_then(|features| {
+                                plan_ransomware_response(policy, pid, &features, assessment)
+                            }),
+                        _ => None,
+                    };
+
                     let _ = emit_event(
-                        metadata.pid as u32,
+                        pid,
                         kind,
                         target_path,
                         policy,
                         ransomware,
+                        ransomware_response,
                     );
                 }
 
@@ -354,6 +385,7 @@ mod linux_agent {
         path: Option<String>,
         policy: Option<&PolicyBundle>,
         ransomware: Option<RansomwareAssessment>,
+        ransomware_response: Option<RansomwareResponseDecision>,
     ) -> io::Result<()> {
         let now = OffsetDateTime::now_utc();
         let timestamp = now
@@ -398,7 +430,8 @@ mod linux_agent {
                 "decision": format!("{:?}", decision.action).to_lowercase(),
                 "would_deny": decision.would_deny,
                 "enforcement": "shadow",
-                "ransomware": ransomware
+                "ransomware": ransomware,
+                "ransomware_response": ransomware_response
             })
         } else {
             serde_json::json!({
@@ -407,7 +440,8 @@ mod linux_agent {
                 "decision": "allow",
                 "would_deny": false,
                 "enforcement": "telemetry_only",
-                "ransomware": ransomware
+                "ransomware": ransomware,
+                "ransomware_response": ransomware_response
             })
         };
         serde_json::to_writer(&mut file, &record)?;
