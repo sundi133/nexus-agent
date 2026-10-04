@@ -1,6 +1,6 @@
 use crate::{
     plan_ransomware_response, verify_signed_policy, DecisionAction, DetectionConfig, EventKind,
-    PolicyBundle, RansomwareResponseAction, RansomwareTracker, SecurityEvent,
+    PolicyBundle, RansomwareResponseAction, RansomwareTracker, ResponseMode, SecurityEvent,
     SignedPolicyEnvelope,
 };
 use std::{slice, str, sync::Mutex};
@@ -40,6 +40,19 @@ pub struct NexusRansomwareResponse {
     /// 0=alert, 1=terminate_process, 2=network_isolate,
     /// 3=terminate_and_network_isolate, 255=none/error.
     pub action: u8,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NexusRansomwareResponseConfig {
+    pub configured: bool,
+    /// 0=disabled, 1=shadow, 2=enforce, 255=error.
+    pub mode: u8,
+    /// 0=alert, 1=terminate_process, 2=network_isolate,
+    /// 3=terminate_and_network_isolate, 255=none/error.
+    pub action: u8,
+    pub min_score: u8,
+    pub require_suspicious_process_context: bool,
 }
 
 
@@ -199,6 +212,54 @@ pub extern "C" fn nexus_ransomware_observe_path(
     NexusRansomwareAssessment {
         score: assessment.score,
         severity,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nexus_policy_ransomware_response_config(
+    policy_handle: *const NexusPolicyHandle,
+) -> NexusRansomwareResponseConfig {
+    let none = NexusRansomwareResponseConfig {
+        configured: false,
+        mode: 255,
+        action: 255,
+        min_score: 0,
+        require_suspicious_process_context: false,
+    };
+
+    if policy_handle.is_null() {
+        return none;
+    }
+
+    let policy = unsafe { &(*policy_handle).policy };
+    let Some(response) = policy.ransomware_response.as_ref() else {
+        return NexusRansomwareResponseConfig {
+            configured: false,
+            mode: 0,
+            action: 255,
+            min_score: 0,
+            require_suspicious_process_context: false,
+        };
+    };
+
+    let mode = match response.mode {
+        ResponseMode::Disabled => 0,
+        ResponseMode::Shadow => 1,
+        ResponseMode::Enforce => 2,
+    };
+    let action = match response.action {
+        RansomwareResponseAction::Alert => 0,
+        RansomwareResponseAction::TerminateProcess => 1,
+        RansomwareResponseAction::NetworkIsolate => 2,
+        RansomwareResponseAction::TerminateAndNetworkIsolate => 3,
+    };
+
+    NexusRansomwareResponseConfig {
+        configured: true,
+        mode,
+        action,
+        min_score: response.min_score,
+        require_suspicious_process_context: response.require_suspicious_process_context,
     }
 }
 
