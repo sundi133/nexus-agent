@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -164,6 +165,125 @@ impl ProcessWindow {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectionConfig {
+    pub window_ms: u64,
+    pub max_processes: usize,
+}
+
+impl Default for DetectionConfig {
+    fn default() -> Self {
+        Self {
+            window_ms: 5_000,
+            max_processes: 4_096,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct RansomwareTracker {
+    config: DetectionConfig,
+    windows: HashMap<u32, ProcessWindow>,
+}
+
+impl RansomwareTracker {
+    pub fn new(config: DetectionConfig) -> Self {
+        Self {
+            config,
+            windows: HashMap::new(),
+        }
+    }
+
+    pub fn observe(&mut self, pid: u32, now_ms: u64, renamed: bool) -> RansomwareAssessment {
+        self.expire(now_ms);
+
+        if !self.windows.contains_key(&pid) && self.windows.len() >= self.config.max_processes {
+            if let Some(oldest_pid) = self.windows
+                .values()
+                .min_by_key(|window| window.last_event_ms)
+                .map(|window| window.pid)
+            {
+                self.windows.remove(&oldest_pid);
+            }
+        }
+
+        let window = self.windows
+            .entry(pid)
+            .or_insert_with(|| ProcessWindow::new(pid, now_ms));
+
+        if now_ms.saturating_sub(window.window_started_ms) > self.config.window_ms {
+            window.reset(now_ms);
+        }
+
+        window.observe_file_change(now_ms, renamed);
+        assess_ransomware(&window.features())
+    }
+
+    pub fn mark_suspicious_process(&mut self, pid: u32, now_ms: u64) {
+        let window = self.windows
+            .entry(pid)
+            .or_insert_with(|| ProcessWindow::new(pid, now_ms));
+        window.suspicious_process_context = true;
+        window.last_event_ms = now_ms;
+    }
+
+    pub fn expire(&mut self, now_ms: u64) {
+        let window_ms = self.config.window_ms;
+        self.windows.retain(|_, window| {
+            now_ms.saturating_sub(window.last_event_ms) <= window_ms
+        });
+    }
+
+    pub fn tracked_processes(&self) -> usize {
+        self.windows.len()
+    }
+}
+
+#[derive(Debug)]
+pub struct BoundedEventQueue<T> {
+    capacity: usize,
+    queue: VecDeque<T>,
+    dropped: u64,
+}
+
+impl<T> BoundedEventQueue<T> {
+    pub fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "queue capacity must be non-zero");
+        Self {
+            capacity,
+            queue: VecDeque::with_capacity(capacity),
+            dropped: 0,
+        }
+    }
+
+    /// Non-blocking producer semantics: preserve already queued work and drop
+    /// the newest event when full. Native callbacks must never wait on consumers.
+    pub fn try_push(&mut self, event: T) -> bool {
+        if self.queue.len() >= self.capacity {
+            self.dropped = self.dropped.saturating_add(1);
+            return false;
+        }
+        self.queue.push_back(event);
+        true
+    }
+
+    pub fn pop(&mut self) -> Option<T> {
+        self.queue.pop_front()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    pub fn dropped(&self) -> u64 {
+        self.dropped
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RansomwareFeatures {
     pub unique_paths_modified: u32,
@@ -295,6 +415,41 @@ mod tests {
         assert_eq!(features.unique_paths_modified, 2);
         assert_eq!(features.rename_count, 1);
         assert_eq!(window.last_event_ms, 1_020);
+    }
+
+    #[test]
+    fn bounded_queue_never_exceeds_capacity() {
+        let mut queue = BoundedEventQueue::new(2);
+        assert!(queue.try_push(1));
+        assert!(queue.try_push(2));
+        assert!(!queue.try_push(3));
+        assert_eq!(queue.len(), 2);
+        assert_eq!(queue.dropped(), 1);
+        assert_eq!(queue.pop(), Some(1));
+    }
+
+    #[test]
+    fn tracker_resets_after_window() {
+        let mut tracker = RansomwareTracker::new(DetectionConfig {
+            window_ms: 100,
+            max_processes: 10,
+        });
+        for now in 0..100 {
+            tracker.observe(7, now, true);
+        }
+        assert!(tracker.observe(7, 500, false).score < 60);
+    }
+
+    #[test]
+    fn tracker_bounds_process_cardinality() {
+        let mut tracker = RansomwareTracker::new(DetectionConfig {
+            window_ms: 10_000,
+            max_processes: 2,
+        });
+        tracker.observe(1, 1, false);
+        tracker.observe(2, 2, false);
+        tracker.observe(3, 3, false);
+        assert_eq!(tracker.tracked_processes(), 2);
     }
 
     #[test]
