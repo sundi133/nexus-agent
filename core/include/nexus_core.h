@@ -24,6 +24,14 @@ typedef struct NexusRansomwareResponse {
     uint8_t action;
 } NexusRansomwareResponse;
 
+typedef struct NexusRansomwareResponseConfig {
+    bool configured;
+    uint8_t mode;
+    uint8_t action;
+    uint8_t min_score;
+    bool require_suspicious_process_context;
+} NexusRansomwareResponseConfig;
+
 typedef enum NexusDecision {
     NEXUS_DECISION_ALLOW = 0,
     NEXUS_DECISION_DENY = 1,
@@ -63,6 +71,10 @@ NexusRansomwareAssessment nexus_ransomware_observe_path(
     const uint8_t *path_ptr,
     size_t path_len,
     bool renamed);
+
+/* mode: 0=disabled, 1=shadow, 2=enforce, 255=error */
+NexusRansomwareResponseConfig nexus_policy_ransomware_response_config(
+    const NexusPolicyHandle *policy_handle);
 
 bool nexus_ransomware_mark_suspicious_process(
     NexusRansomwareTrackerHandle *handle,
