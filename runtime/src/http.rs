@@ -1,4 +1,4 @@
-use crate::config::ControlPlaneConfig;
+use crate::{config::ControlPlaneConfig, credentials::read_secret_file};
 use nexus_agent_core::AgentHealth;
 use reqwest::{
     blocking::{Client, Response},
@@ -6,7 +6,6 @@ use reqwest::{
     StatusCode,
 };
 use std::{
-    fs,
     io::{self, Read},
     time::Duration,
 };
@@ -125,13 +124,13 @@ impl HttpControlPlane {
     }
 
     fn read_token(&self) -> Result<String, TransportError> {
-        let token = fs::read_to_string(&self.config.bearer_token_file)
-            .map_err(|_| TransportError::Credential)?;
-        let token = token.trim();
-        if token.is_empty() || token.len() > 16 * 1024 {
-            return Err(TransportError::Credential);
-        }
-        Ok(token.to_string())
+        read_secret_file(
+            &self.config.bearer_token_file,
+            1,
+            16 * 1024,
+            true,
+        )
+        .map_err(|_| TransportError::Credential)
     }
 }
 
