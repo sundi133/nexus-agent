@@ -19,6 +19,8 @@ pub struct RuntimeConfig {
     pub event_source_path: PathBuf,
     pub event_offset_path: PathBuf,
     pub health_source_path: PathBuf,
+    pub local_ingest_port: Option<u16>,
+    pub local_ingest_token_file: Option<PathBuf>,
     #[serde(default = "default_cycle_interval_ms")]
     pub cycle_interval_ms: u64,
     #[serde(default = "default_spool_max_bytes")]
@@ -51,6 +53,8 @@ pub enum ConfigError {
     InvalidTimeout,
     #[error("spool limits are invalid")]
     InvalidSpoolLimits,
+    #[error("local ingest configuration is invalid")]
+    InvalidLocalIngest,
 }
 
 impl RuntimeConfig {
@@ -63,6 +67,13 @@ impl RuntimeConfig {
         {
             return Err(ConfigError::InvalidSpoolLimits);
         }
+
+        match (&self.local_ingest_port, &self.local_ingest_token_file) {
+            (None, None) => {}
+            (Some(port), Some(path)) if *port >= 1024 && !path.as_os_str().is_empty() => {}
+            _ => return Err(ConfigError::InvalidLocalIngest),
+        }
+
         Ok(())
     }
 }
@@ -128,6 +139,8 @@ mod tests {
             event_source_path: "events.jsonl".into(),
             event_offset_path: "events.offset".into(),
             health_source_path: "health.json".into(),
+            local_ingest_port: None,
+            local_ingest_token_file: None,
             cycle_interval_ms: 1000,
             spool_max_bytes: 1024,
             segment_max_bytes: 256,
@@ -152,6 +165,19 @@ mod tests {
             cfg.validate(),
             Err(ConfigError::UnsafeUrl("events_url"))
         );
+    }
+
+    #[test]
+    fn validates_local_ingest_pairing() {
+        let mut cfg = config();
+        cfg.local_ingest_port = Some(8765);
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
+
+        cfg.local_ingest_token_file = Some("local-token".into());
+        assert!(cfg.validate().is_ok());
+
+        cfg.local_ingest_port = Some(80);
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
     }
 
     #[test]
