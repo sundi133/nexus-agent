@@ -1,8 +1,8 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use nexus_agent_core::{AgentHealth, CapabilityState, PolicyBundle};
 use nexus_agent_runtime::{
-    spawn_local_ingest, DiskSpool, HttpControlPlane, JsonlTailer, PolicyStore, RuntimeConfig,
-    RuntimeWorker,
+    spawn_local_ingest, DiskSpool, HttpControlPlane, JsonlTailer, LocalIngestAuth,
+    PolicyStore, ProducerCredential, RuntimeConfig, RuntimeWorker,
 };
 use std::{
     env, fs, io,
@@ -52,6 +52,29 @@ fn load_local_ingest_token(path: &Path) -> Result<String, String> {
         return Err("local ingest token must be 32-512 non-newline characters".to_string());
     }
     Ok(token)
+}
+
+fn load_bound_producers(
+    producers: &[nexus_agent_runtime::config::LocalProducerConfig],
+) -> Result<Vec<ProducerCredential>, String> {
+    let mut loaded = Vec::with_capacity(producers.len());
+    let mut token_values = std::collections::HashSet::new();
+
+    for producer in producers {
+        let token = load_local_ingest_token(&producer.token_file)?;
+        if !token_values.insert(token.clone()) {
+            return Err(format!(
+                "duplicate local producer token detected for agent_id={}",
+                producer.agent_id
+            ));
+        }
+        loaded.push(ProducerCredential {
+            agent_id: producer.agent_id.clone(),
+            token,
+        });
+    }
+
+    Ok(loaded)
 }
 
 fn load_config(path: &Path) -> Result<RuntimeConfig, String> {
@@ -118,17 +141,34 @@ fn run_runtime_loop(
     );
 
     let (action_tx, action_rx) = mpsc::channel();
-    let local_ingest_enabled = match (
+    let (local_ingest_enabled, local_ingest_identity_mode) = match (
         config.local_ingest_port,
         config.local_ingest_token_file.as_deref(),
+        config.local_ingest_producers.as_slice(),
     ) {
-        (Some(port), Some(token_path)) => {
+        (Some(port), Some(token_path), []) => {
             let token = load_local_ingest_token(token_path)?;
-            spawn_local_ingest(port, token, active_policy.clone(), action_tx)
-                .map_err(|error| format!("cannot start local agent-action ingest: {error}"))?;
-            true
+            spawn_local_ingest(
+                port,
+                LocalIngestAuth::LegacyToken(token),
+                active_policy.clone(),
+                action_tx,
+            )
+            .map_err(|error| format!("cannot start local agent-action ingest: {error}"))?;
+            (true, "legacy_shared_token")
         }
-        (None, None) => false,
+        (Some(port), None, producers) if !producers.is_empty() => {
+            let credentials = load_bound_producers(producers)?;
+            spawn_local_ingest(
+                port,
+                LocalIngestAuth::BoundProducers(credentials),
+                active_policy.clone(),
+                action_tx,
+            )
+            .map_err(|error| format!("cannot start bound agent-action ingest: {error}"))?;
+            (true, "credential_bound_agent_id")
+        }
+        (None, None, []) => (false, "disabled"),
         _ => return Err("local ingest configuration is incomplete".to_string()),
     };
 
@@ -184,7 +224,7 @@ fn run_runtime_loop(
             },
             if local_ingest_enabled {
                 format!(
-                    "localhost authenticated MCP/agent-action bridge active; ingested_this_cycle={agent_actions_ingested}"
+                    "localhost authenticated MCP/agent-action bridge active mode={local_ingest_identity_mode}; ingested_this_cycle={agent_actions_ingested}"
                 )
             } else {
                 "local MCP/agent-action bridge not configured".to_string()
