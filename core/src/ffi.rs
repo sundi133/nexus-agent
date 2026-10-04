@@ -1,3 +1,4 @@
+use base64::{engine::general_purpose::STANDARD as BASE64_ENGINE, Engine as _};
 use crate::{
     plan_ransomware_response, verify_signed_policy, DecisionAction, DetectionConfig, EventKind,
     PolicyBundle, RansomwareResponseAction, RansomwareTracker, ResponseMode, SecurityEvent,
@@ -100,7 +101,7 @@ pub extern "C" fn nexus_policy_from_signed_json_with_public_key_b64(
     let Ok(key_b64) = str::from_utf8(key_b64_bytes) else {
         return std::ptr::null_mut();
     };
-    let Ok(key_bytes) = BASE64.decode(key_b64.trim()) else {
+    let Ok(key_bytes) = BASE64_ENGINE.decode(key_b64.trim()) else {
         return std::ptr::null_mut();
     };
     if key_bytes.len() != 32 {
