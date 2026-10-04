@@ -5,7 +5,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux_agent {
-    use nexus_agent_core::{EventKind, SecurityEvent};
+    use nexus_agent_core::{verify_signed_policy, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
     use std::{
         ffi::CString,
         fs::{read_link, OpenOptions},
@@ -19,10 +19,17 @@ mod linux_agent {
 
     const EVENT_LOG_PATH: &str = "/var/lib/votal/nexus/events.jsonl";
     const BUFFER_SIZE: usize = 64 * 1024;
+    const POLICY_PATH: &str = "/var/lib/votal/nexus/policy.signed.json";
+    // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
+    const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
     pub fn run() -> io::Result<()> {
         let fan_fd = fanotify_start("/")?;
-        eprintln!("nexus-agent-linux: fanotify audit collector active on /");
+        let policy = load_verified_policy();
+        eprintln!(
+            "nexus-agent-linux: fanotify audit collector active on /; policy_loaded={}; enforcement=shadow",
+            policy.is_some()
+        );
 
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
@@ -50,7 +57,7 @@ mod linux_agent {
                 continue;
             }
 
-            parse_events(&buffer[..read_count as usize])?;
+            parse_events(&buffer[..read_count as usize], policy.as_ref())?;
         }
     }
 
@@ -90,7 +97,7 @@ mod linux_agent {
         Ok(fan_fd)
     }
 
-    fn parse_events(buffer: &[u8]) -> io::Result<()> {
+    fn parse_events(buffer: &[u8], policy: Option<&PolicyBundle>) -> io::Result<()> {
         let mut offset = 0usize;
 
         while offset + size_of::<libc::fanotify_event_metadata>() <= buffer.len() {
@@ -120,7 +127,7 @@ mod linux_agent {
                 };
 
                 if let Some(kind) = kind {
-                    let _ = emit_event(metadata.pid as u32, kind, target_path);
+                    let _ = emit_event(metadata.pid as u32, kind, target_path, policy);
                 }
 
                 unsafe { libc::close(metadata.fd) };
@@ -136,6 +143,17 @@ mod linux_agent {
         Ok(())
     }
 
+
+    fn load_verified_policy() -> Option<PolicyBundle> {
+        if POLICY_PUBLIC_KEY.iter().all(|byte| *byte == 0) {
+            return None;
+        }
+
+        let envelope_bytes = std::fs::read(POLICY_PATH).ok()?;
+        let envelope: SignedPolicyEnvelope = serde_json::from_slice(&envelope_bytes).ok()?;
+        verify_signed_policy(&envelope, &POLICY_PUBLIC_KEY).ok()
+    }
+
     fn fd_path(fd: RawFd) -> Option<String> {
         let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
         read_link(link)
@@ -143,7 +161,7 @@ mod linux_agent {
             .map(|path| path.to_string_lossy().into_owned())
     }
 
-    fn emit_event(pid: u32, kind: EventKind, path: Option<String>) -> io::Result<()> {
+    fn emit_event(pid: u32, kind: EventKind, path: Option<String>, policy: Option<&PolicyBundle>) -> io::Result<()> {
         let now = OffsetDateTime::now_utc();
         let timestamp = now
             .format(&Rfc3339)
@@ -179,7 +197,25 @@ mod linux_agent {
             .create(true)
             .append(true)
             .open(log_path)?;
-        serde_json::to_writer(&mut file, &event)?;
+        let record = if let Some(policy) = policy {
+            let decision = policy.evaluate(&event);
+            serde_json::json!({
+                "event": event,
+                "policy_version": decision.policy_version,
+                "decision": format!("{:?}", decision.action).to_lowercase(),
+                "would_deny": decision.would_deny,
+                "enforcement": "shadow"
+            })
+        } else {
+            serde_json::json!({
+                "event": event,
+                "policy_version": null,
+                "decision": "allow",
+                "would_deny": false,
+                "enforcement": "telemetry_only"
+            })
+        };
+        serde_json::to_writer(&mut file, &record)?;
         file.write_all(b"\n")?;
         Ok(())
     }
