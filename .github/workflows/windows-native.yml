@@ -1,0 +1,24 @@
+name: windows-native-build
+
+on:
+  push:
+    paths:
+      - "platforms/windows/**"
+      - "core/**"
+      - ".github/workflows/windows-native.yml"
+  pull_request:
+    paths:
+      - "platforms/windows/**"
+      - "core/**"
+      - ".github/workflows/windows-native.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Windows adapter
+        run: cargo test --manifest-path platforms/windows/Cargo.toml
+      - name: Build Windows adapter
+        run: cargo build --release --manifest-path platforms/windows/Cargo.toml
