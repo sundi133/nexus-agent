@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
-use nexus_agent_core::{AgentHealth, CapabilityState};
+use nexus_agent_core::{AgentHealth, CapabilityState, PolicyBundle};
 use nexus_agent_runtime::{
     spawn_local_ingest, DiskSpool, HttpControlPlane, JsonlTailer, PolicyStore, RuntimeConfig,
     RuntimeWorker,
@@ -7,7 +7,7 @@ use nexus_agent_runtime::{
 use std::{
     env, fs, io,
     path::Path,
-    sync::mpsc,
+    sync::{mpsc, Arc, RwLock},
     thread,
     time::Duration,
 };
@@ -96,6 +96,14 @@ fn run_runtime_loop(
         config.policy_watermark_path.clone(),
         public_key,
     );
+    let policy_store_for_decisions = policy_store.clone();
+    let active_policy: Arc<RwLock<Option<PolicyBundle>>> = Arc::new(RwLock::new(
+        policy_store_for_decisions
+            .load_active()
+            .ok()
+            .flatten()
+            .map(|active| active.policy),
+    ));
     let spool = DiskSpool::open(
         config.spool_dir.clone(),
         config.spool_max_bytes,
@@ -116,7 +124,7 @@ fn run_runtime_loop(
     ) {
         (Some(port), Some(token_path)) => {
             let token = load_local_ingest_token(token_path)?;
-            spawn_local_ingest(port, token, action_tx)
+            spawn_local_ingest(port, token, active_policy.clone(), action_tx)
                 .map_err(|error| format!("cannot start local agent-action ingest: {error}"))?;
             true
         }
@@ -216,7 +224,26 @@ fn run_runtime_loop(
         );
 
         let report = worker.run_once(&health);
-        previous_cycle_errors = report.errors.clone();
+
+        if report.policy_updated {
+            match policy_store_for_decisions.load_active() {
+                Ok(active) => {
+                    if let Ok(mut guard) = active_policy.write() {
+                        *guard = active.map(|value| value.policy);
+                    } else {
+                        previous_cycle_errors.push(
+                            "active agent-action policy lock unavailable after policy update"
+                                .to_string(),
+                        );
+                    }
+                }
+                Err(error) => previous_cycle_errors.push(format!(
+                    "cannot refresh active agent-action policy after update: {error}"
+                )),
+            }
+        }
+
+        previous_cycle_errors.extend(report.errors.clone());
 
         if !report.errors.is_empty() {
             eprintln!(
