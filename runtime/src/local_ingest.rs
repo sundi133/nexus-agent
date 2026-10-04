@@ -49,6 +49,8 @@ use std::{
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024;
+#[cfg(windows)]
+const PIPE_REJECT_REMOTE_CLIENTS_FLAG: u32 = 0x0000_0008;
 
 #[derive(Debug, Clone)]
 pub struct ProducerCredential {
@@ -306,7 +308,7 @@ pub fn spawn_local_ingest_windows_pipe(
             CreateNamedPipeW(
                 wide_name.as_ptr(),
                 PIPE_ACCESS_DUPLEX,
-                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS_FLAG,
                 PIPE_UNLIMITED_INSTANCES,
                 64 * 1024,
                 64 * 1024,
