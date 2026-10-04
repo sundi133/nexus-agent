@@ -16,9 +16,10 @@ mod service {
     use crate::file_etw::{EtwFileActivity, FileActivityKind, FileTrace};
     use crate::wfp::WfpSession;
     use nexus_agent_core::{
-        verify_signed_policy, AgentHealth, CapabilityState, DecisionAction, DetectionConfig,
-        EnforcementMode, EventKind, PolicyBundle, RansomwareAssessment, RansomwareTracker,
-        SecurityEvent, SignedPolicyEnvelope,
+        plan_ransomware_response, verify_signed_policy, AgentHealth, CapabilityState,
+        DecisionAction, DetectionConfig, EnforcementMode, EventKind, PolicyBundle,
+        RansomwareAssessment, RansomwareResponseDecision, RansomwareTracker, SecurityEvent,
+        SignedPolicyEnvelope,
     };
     use std::{
         collections::HashMap,
@@ -220,6 +221,14 @@ mod service {
                     };
                     let full_path = query_process_path(process.pid)
                         .unwrap_or_else(|| process.image_name.clone());
+                    mark_suspicious_if_policy_would_deny(
+                        policy,
+                        &mut ransomware_tracker,
+                        process.pid,
+                        Some(process.parent_pid),
+                        &full_path,
+                        started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    );
                     let _ = emit_process_start(&process, full_path, policy);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -258,6 +267,14 @@ mod service {
                         if !known.contains_key(pid) {
                             let full_path = query_process_path(*pid)
                                 .unwrap_or_else(|| process.image_name.clone());
+                            mark_suspicious_if_policy_would_deny(
+                                policy,
+                                &mut ransomware_tracker,
+                                *pid,
+                                Some(process.parent_pid),
+                                &full_path,
+                                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            );
                             let _ = emit_process_start(process, full_path, policy);
                         }
                     }
@@ -281,6 +298,35 @@ mod service {
         }
     }
 
+    fn mark_suspicious_if_policy_would_deny(
+        policy: Option<&PolicyBundle>,
+        tracker: &mut RansomwareTracker,
+        pid: u32,
+        parent_pid: Option<u32>,
+        executable_path: &str,
+        now_ms: u64,
+    ) {
+        let Some(policy) = policy else {
+            return;
+        };
+
+        let event = SecurityEvent {
+            event_id: "windows-exec-context".into(),
+            timestamp: String::new(),
+            device_id: String::new(),
+            kind: EventKind::ProcessExec,
+            pid: Some(pid),
+            parent_pid,
+            executable_path: Some(executable_path.to_string()),
+            target_path: None,
+            destination_host: None,
+        };
+
+        if policy.evaluate(&event).would_deny {
+            tracker.mark_suspicious_process(pid, now_ms);
+        }
+    }
+
     fn emit_file_activity(
         activity: EtwFileActivity,
         policy: Option<&PolicyBundle>,
@@ -294,6 +340,13 @@ mod service {
             &activity.path,
             renamed,
         );
+        let ransomware_response = policy.and_then(|policy| {
+            ransomware_tracker
+                .features_for(activity.pid)
+                .and_then(|features| {
+                    plan_ransomware_response(policy, activity.pid, &features, &assessment)
+                })
+        });
 
         let now = OffsetDateTime::now_utc();
         let timestamp = now
@@ -321,7 +374,12 @@ mod service {
             destination_host: None,
         };
 
-        append_json_line(&event, policy, Some(&assessment))
+        append_json_line(
+            &event,
+            policy,
+            Some(&assessment),
+            ransomware_response.as_ref(),
+        )
     }
 
     fn emit_process_start(process: &ProcessInfo, executable_path: String, policy: Option<&PolicyBundle>) -> io::Result<()> {
@@ -344,13 +402,14 @@ mod service {
             destination_host: None,
         };
 
-        append_json_line(&event, policy, None)
+        append_json_line(&event, policy, None, None)
     }
 
     fn append_json_line(
         event: &SecurityEvent,
         policy: Option<&PolicyBundle>,
         ransomware: Option<&RansomwareAssessment>,
+        ransomware_response: Option<&RansomwareResponseDecision>,
     ) -> io::Result<()> {
         let path = Path::new(EVENT_LOG_PATH);
         if let Some(parent) = path.parent() {
@@ -365,7 +424,8 @@ mod service {
                 "decision": format!("{:?}", decision.action).to_lowercase(),
                 "would_deny": decision.would_deny,
                 "enforcement": "shadow",
-                "ransomware": ransomware
+                "ransomware": ransomware,
+                "ransomware_response": ransomware_response
             })
         } else {
             serde_json::json!({
@@ -374,7 +434,8 @@ mod service {
                 "decision": "allow",
                 "would_deny": false,
                 "enforcement": "telemetry_only",
-                "ransomware": ransomware
+                "ransomware": ransomware,
+                "ransomware_response": ransomware_response
             })
         };
         serde_json::to_writer(&mut file, &record)?;
