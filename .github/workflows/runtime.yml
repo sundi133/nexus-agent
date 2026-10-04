@@ -1,0 +1,24 @@
+name: runtime-ci
+
+on:
+  push:
+    paths:
+      - "runtime/**"
+      - "core/**"
+      - ".github/workflows/runtime.yml"
+  pull_request:
+    paths:
+      - "runtime/**"
+      - "core/**"
+      - ".github/workflows/runtime.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test managed runtime
+        run: cargo test --manifest-path runtime/Cargo.toml
+      - name: Build managed runtime
+        run: cargo build --release --manifest-path runtime/Cargo.toml
