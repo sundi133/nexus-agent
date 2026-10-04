@@ -1,3 +1,5 @@
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
@@ -25,6 +27,54 @@ pub struct PolicyRule {
     pub executable_paths: Vec<String>,
     #[serde(default)]
     pub destination_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SignedPolicyEnvelope {
+    pub algorithm: String,
+    pub key_id: String,
+    pub payload_b64: String,
+    pub signature_b64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PolicyVerificationError {
+    UnsupportedAlgorithm,
+    InvalidPublicKey,
+    InvalidPayloadEncoding,
+    InvalidSignatureEncoding,
+    InvalidSignature,
+    InvalidPolicy,
+}
+
+pub fn verify_signed_policy(
+    envelope: &SignedPolicyEnvelope,
+    public_key: &[u8],
+) -> Result<PolicyBundle, PolicyVerificationError> {
+    if envelope.algorithm != "Ed25519" {
+        return Err(PolicyVerificationError::UnsupportedAlgorithm);
+    }
+
+    let key_bytes: [u8; 32] = public_key
+        .try_into()
+        .map_err(|_| PolicyVerificationError::InvalidPublicKey)?;
+    let verifying_key = VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| PolicyVerificationError::InvalidPublicKey)?;
+
+    let payload = BASE64
+        .decode(&envelope.payload_b64)
+        .map_err(|_| PolicyVerificationError::InvalidPayloadEncoding)?;
+    let signature_bytes = BASE64
+        .decode(&envelope.signature_b64)
+        .map_err(|_| PolicyVerificationError::InvalidSignatureEncoding)?;
+    let signature = Signature::from_slice(&signature_bytes)
+        .map_err(|_| PolicyVerificationError::InvalidSignatureEncoding)?;
+
+    verifying_key
+        .verify(&payload, &signature)
+        .map_err(|_| PolicyVerificationError::InvalidSignature)?;
+
+    serde_json::from_slice(&payload).map_err(|_| PolicyVerificationError::InvalidPolicy)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,6 +385,7 @@ pub fn assess_ransomware(features: &RansomwareFeatures) -> RansomwareAssessment 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ed25519_dalek::{Signer, SigningKey};
 
     fn event() -> SecurityEvent {
         SecurityEvent {
@@ -362,6 +413,50 @@ mod tests {
                 destination_hosts: vec![],
             }],
         }
+    }
+
+    #[test]
+    fn signed_policy_round_trip() {
+        let signing_key = SigningKey::from_bytes(&[7u8; 32]);
+        let payload = serde_json::to_vec(&bundle(EnforcementMode::Enforce)).unwrap();
+        let signature = signing_key.sign(&payload);
+        let envelope = SignedPolicyEnvelope {
+            algorithm: "Ed25519".into(),
+            key_id: "test-key".into(),
+            payload_b64: BASE64.encode(&payload),
+            signature_b64: BASE64.encode(signature.to_bytes()),
+        };
+
+        let verified = verify_signed_policy(
+            &envelope,
+            signing_key.verifying_key().as_bytes(),
+        )
+        .unwrap();
+
+        assert_eq!(verified.version, 7);
+        assert_eq!(verified.mode, EnforcementMode::Enforce);
+    }
+
+    #[test]
+    fn tampered_signed_policy_is_rejected() {
+        let signing_key = SigningKey::from_bytes(&[9u8; 32]);
+        let payload = serde_json::to_vec(&bundle(EnforcementMode::Audit)).unwrap();
+        let signature = signing_key.sign(&payload);
+        let mut envelope = SignedPolicyEnvelope {
+            algorithm: "Ed25519".into(),
+            key_id: "test-key".into(),
+            payload_b64: BASE64.encode(&payload),
+            signature_b64: BASE64.encode(signature.to_bytes()),
+        };
+
+        let mut tampered = payload.clone();
+        tampered.push(b' ');
+        envelope.payload_b64 = BASE64.encode(tampered);
+
+        assert_eq!(
+            verify_signed_policy(&envelope, signing_key.verifying_key().as_bytes()),
+            Err(PolicyVerificationError::InvalidSignature)
+        );
     }
 
     #[test]
