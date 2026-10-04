@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::{
     fs,
-    io::{self, BufRead, BufReader, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
