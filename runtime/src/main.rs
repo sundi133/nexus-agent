@@ -4,6 +4,8 @@ use nexus_agent_runtime::{
     spawn_local_ingest, DiskSpool, HttpControlPlane, JsonlTailer, LocalIngestAuth,
     PolicyStore, ProducerCredential, RuntimeConfig, RuntimeWorker,
 };
+#[cfg(unix)]
+use nexus_agent_runtime::spawn_local_ingest_unix;
 use std::{
     env, fs, io,
     path::Path,
@@ -71,6 +73,8 @@ fn load_bound_producers(
         loaded.push(ProducerCredential {
             agent_id: producer.agent_id.clone(),
             token,
+            expected_uid: producer.expected_uid,
+            executable_paths: producer.executable_paths.clone(),
         });
     }
 
@@ -143,10 +147,11 @@ fn run_runtime_loop(
     let (action_tx, action_rx) = mpsc::channel();
     let (local_ingest_enabled, local_ingest_identity_mode) = match (
         config.local_ingest_port,
+        config.local_ingest_socket_path.as_deref(),
         config.local_ingest_token_file.as_deref(),
         config.local_ingest_producers.as_slice(),
     ) {
-        (Some(port), Some(token_path), []) => {
+        (Some(port), None, Some(token_path), []) => {
             let token = load_local_ingest_token(token_path)?;
             spawn_local_ingest(
                 port,
@@ -155,9 +160,9 @@ fn run_runtime_loop(
                 action_tx,
             )
             .map_err(|error| format!("cannot start local agent-action ingest: {error}"))?;
-            (true, "legacy_shared_token")
+            (true, "legacy_shared_token_tcp")
         }
-        (Some(port), None, producers) if !producers.is_empty() => {
+        (Some(port), None, None, producers) if !producers.is_empty() => {
             let credentials = load_bound_producers(producers)?;
             spawn_local_ingest(
                 port,
@@ -166,10 +171,22 @@ fn run_runtime_loop(
                 action_tx,
             )
             .map_err(|error| format!("cannot start bound agent-action ingest: {error}"))?;
-            (true, "credential_bound_agent_id")
+            (true, "credential_bound_tcp")
         }
-        (None, None, []) => (false, "disabled"),
-        _ => return Err("local ingest configuration is incomplete".to_string()),
+        #[cfg(unix)]
+        (None, Some(socket_path), None, producers) if !producers.is_empty() => {
+            let credentials = load_bound_producers(producers)?;
+            spawn_local_ingest_unix(
+                socket_path.to_path_buf(),
+                LocalIngestAuth::BoundProducers(credentials),
+                active_policy.clone(),
+                action_tx,
+            )
+            .map_err(|error| format!("cannot start attested Unix agent-action ingest: {error}"))?;
+            (true, "kernel_peer_attested_unix")
+        }
+        (None, None, None, []) => (false, "disabled"),
+        _ => return Err("local ingest configuration is incomplete or unsupported on this platform".to_string()),
     };
 
     let mut previous_cycle_errors: Vec<String> = Vec::new();
