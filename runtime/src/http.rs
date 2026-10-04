@@ -24,6 +24,16 @@ pub enum PolicyFetch {
     },
 }
 
+pub trait ControlPlaneTransport {
+    fn fetch_policy(
+        &self,
+        previous_etag: Option<&str>,
+    ) -> Result<PolicyFetch, TransportError>;
+
+    fn post_health(&self, health: &AgentHealth) -> Result<(), TransportError>;
+    fn post_events(&self, jsonl: &[u8]) -> Result<(), TransportError>;
+}
+
 #[derive(Debug)]
 pub struct HttpControlPlane {
     config: ControlPlaneConfig,
@@ -61,7 +71,7 @@ impl HttpControlPlane {
         Ok(Self { config, client })
     }
 
-    pub fn fetch_policy(
+    fn fetch_policy_impl(
         &self,
         previous_etag: Option<&str>,
     ) -> Result<PolicyFetch, TransportError> {
@@ -91,7 +101,7 @@ impl HttpControlPlane {
         Ok(PolicyFetch::Updated { body, etag })
     }
 
-    pub fn post_health(&self, health: &AgentHealth) -> Result<(), TransportError> {
+    fn post_health_impl(&self, health: &AgentHealth) -> Result<(), TransportError> {
         let token = self.read_token()?;
         let response = self
             .client
@@ -102,7 +112,7 @@ impl HttpControlPlane {
         ensure_success(&response)
     }
 
-    pub fn post_events(&self, jsonl: &[u8]) -> Result<(), TransportError> {
+    fn post_events_impl(&self, jsonl: &[u8]) -> Result<(), TransportError> {
         let token = self.read_token()?;
         let response = self
             .client
@@ -151,4 +161,22 @@ fn read_bounded(
         return Err(TransportError::TooLarge);
     }
     Ok(body)
+}
+
+
+impl ControlPlaneTransport for HttpControlPlane {
+    fn fetch_policy(
+        &self,
+        previous_etag: Option<&str>,
+    ) -> Result<PolicyFetch, TransportError> {
+        self.fetch_policy_impl(previous_etag)
+    }
+
+    fn post_health(&self, health: &AgentHealth) -> Result<(), TransportError> {
+        self.post_health_impl(health)
+    }
+
+    fn post_events(&self, jsonl: &[u8]) -> Result<(), TransportError> {
+        self.post_events_impl(jsonl)
+    }
 }
