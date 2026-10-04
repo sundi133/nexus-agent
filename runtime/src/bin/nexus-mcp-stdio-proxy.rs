@@ -5,7 +5,7 @@ use nexus_agent_runtime::{
 use serde_json::Value;
 use std::{
     env,
-    io::{self, BufRead, BufReader, BufWriter, Read, Write},
+    io::{self, BufRead, BufReader, BufWriter, Write},
     path::PathBuf,
     process::{Command, Stdio},
     sync::{Arc, Mutex},
@@ -392,6 +392,7 @@ fn set_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nexus_agent_core::AgentActionKind;
 
     #[test]
     fn tool_call_normalizes_without_arguments() {
