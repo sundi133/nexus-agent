@@ -115,7 +115,7 @@ mod service {
 
         let policy = load_verified_policy();
         let _ = write_diagnostic(if policy.is_some() {
-            "signed policy verified; Windows service remains shadow-only"
+            "signed policy verified; process enforcement is shadow-only and supported network rules may be enforced dynamically"
         } else {
             "no verified policy loaded; telemetry-only"
         });
