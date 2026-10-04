@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/agent-action-v1.json",
+  "title": "Votal AI Agent Action Event",
+  "type": "object",
+  "required": [
+    "event_id",
+    "timestamp",
+    "device_id",
+    "kind",
+    "operation"
+  ],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "timestamp": {"type": "string", "format": "date-time", "maxLength": 64},
+    "device_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "pid": {"type": ["integer", "null"], "minimum": 0},
+    "agent_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "session_id": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "kind": {
+      "type": "string",
+      "enum": [
+        "mcp_tool_call",
+        "mcp_resource_read",
+        "agent_command",
+        "browser_action",
+        "network_request",
+        "file_operation"
+      ]
+    },
+    "mcp_server": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "tool_name": {"type": ["string", "null"], "minLength": 1, "maxLength": 256},
+    "operation": {"type": "string", "minLength": 1, "maxLength": 256},
+    "resource": {"type": ["string", "null"], "maxLength": 2048},
+    "risk_tags": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {"type": "string", "minLength": 1, "maxLength": 64}
+    }
+  },
+  "additionalProperties": false
+}
