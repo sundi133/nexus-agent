@@ -1,6 +1,8 @@
 #[cfg(windows)]
 mod etw;
 #[cfg(windows)]
+mod file_etw;
+#[cfg(windows)]
 mod wfp;
 
 #[cfg(not(windows))]
@@ -11,10 +13,12 @@ fn main() {
 #[cfg(windows)]
 mod service {
     use crate::etw::{EtwProcessStart, ProcessTrace};
+    use crate::file_etw::{EtwFileActivity, FileActivityKind, FileTrace};
     use crate::wfp::WfpSession;
     use nexus_agent_core::{
-        verify_signed_policy, AgentHealth, CapabilityState, DecisionAction, EnforcementMode,
-        EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope,
+        verify_signed_policy, AgentHealth, CapabilityState, DecisionAction, DetectionConfig,
+        EnforcementMode, EventKind, PolicyBundle, RansomwareAssessment, RansomwareTracker,
+        SecurityEvent, SignedPolicyEnvelope,
     };
     use std::{
         collections::HashMap,
@@ -25,7 +29,7 @@ mod service {
         net::Ipv4Addr,
         path::Path,
         sync::mpsc,
-        time::Duration,
+        time::{Duration, Instant},
     };
     use time::{format_description::well_known::Rfc3339, OffsetDateTime};
     use windows_service::{
@@ -122,6 +126,21 @@ mod service {
 
         let (network_session, network_state, network_detail) =
             configure_network_enforcement(policy.as_ref());
+
+        let (file_tx, file_rx) = mpsc::channel();
+        let (file_trace, file_state, file_detail) = match FileTrace::start(file_tx) {
+            Ok(trace) => (
+                Some(trace),
+                CapabilityState::Active,
+                "ETW Microsoft-Windows-Kernel-File with FileKey path correlation".to_string(),
+            ),
+            Err(error) => (
+                None,
+                CapabilityState::Unavailable,
+                format!("Kernel-File ETW unavailable: {error}"),
+            ),
+        };
+
         let (etw_tx, etw_rx) = mpsc::channel();
 
         match ProcessTrace::start(etw_tx) {
@@ -133,9 +152,11 @@ mod service {
                     "ETW Microsoft-Windows-Kernel-Process",
                     network_state,
                     &network_detail,
+                    file_state,
+                    &file_detail,
                 );
                 let _ = write_health(&health);
-                run_etw_loop(&shutdown_rx, &etw_rx, policy.as_ref());
+                run_etw_loop(&shutdown_rx, &etw_rx, &file_rx, policy.as_ref());
             }
             Err(error) => {
                 let detail = format!("ETW unavailable; Tool Help polling fallback: {error}");
@@ -146,12 +167,15 @@ mod service {
                     &detail,
                     network_state,
                     &network_detail,
+                    file_state,
+                    &file_detail,
                 );
                 let _ = write_health(&health);
-                run_snapshot_loop(&shutdown_rx, policy.as_ref());
+                run_snapshot_loop(&shutdown_rx, &file_rx, policy.as_ref());
             }
         }
 
+        drop(file_trace);
         drop(network_session);
 
         status_handle.set_service_status(ServiceStatus {
@@ -170,9 +194,19 @@ mod service {
     fn run_etw_loop(
         shutdown_rx: &mpsc::Receiver<()>,
         etw_rx: &mpsc::Receiver<EtwProcessStart>,
+        file_rx: &mpsc::Receiver<EtwFileActivity>,
         policy: Option<&PolicyBundle>,
     ) {
+        let started = Instant::now();
+        let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
+
         loop {
+            drain_file_activity(
+                file_rx,
+                policy,
+                &mut ransomware_tracker,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            );
             if shutdown_rx.try_recv().is_ok() {
                 break;
             }
@@ -199,11 +233,20 @@ mod service {
 
     fn run_snapshot_loop(
         shutdown_rx: &mpsc::Receiver<()>,
+        file_rx: &mpsc::Receiver<EtwFileActivity>,
         policy: Option<&PolicyBundle>,
     ) {
         let mut known = snapshot_processes().unwrap_or_default();
+        let started = Instant::now();
+        let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
 
         loop {
+            drain_file_activity(
+                file_rx,
+                policy,
+                &mut ransomware_tracker,
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            );
             match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -227,6 +270,60 @@ mod service {
         }
     }
 
+    fn drain_file_activity(
+        file_rx: &mpsc::Receiver<EtwFileActivity>,
+        policy: Option<&PolicyBundle>,
+        ransomware_tracker: &mut RansomwareTracker,
+        now_ms: u64,
+    ) {
+        while let Ok(activity) = file_rx.try_recv() {
+            let _ = emit_file_activity(activity, policy, ransomware_tracker, now_ms);
+        }
+    }
+
+    fn emit_file_activity(
+        activity: EtwFileActivity,
+        policy: Option<&PolicyBundle>,
+        ransomware_tracker: &mut RansomwareTracker,
+        now_ms: u64,
+    ) -> io::Result<()> {
+        let renamed = activity.kind == FileActivityKind::Rename;
+        let assessment = ransomware_tracker.observe_path(
+            activity.pid,
+            now_ms,
+            &activity.path,
+            renamed,
+        );
+
+        let now = OffsetDateTime::now_utc();
+        let timestamp = now
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+        let device_id =
+            std::env::var("COMPUTERNAME").unwrap_or_else(|_| "windows-device".to_string());
+
+        let kind = match activity.kind {
+            FileActivityKind::Write => EventKind::FileWrite,
+            FileActivityKind::Rename => EventKind::FileRename,
+            FileActivityKind::Delete => EventKind::FileDelete,
+            FileActivityKind::Create => EventKind::FileCreate,
+        };
+
+        let event = SecurityEvent {
+            event_id: format!("windows-file-{}-{}", activity.pid, now.unix_timestamp_nanos()),
+            timestamp,
+            device_id,
+            kind,
+            pid: Some(activity.pid),
+            parent_pid: None,
+            executable_path: None,
+            target_path: Some(activity.path),
+            destination_host: None,
+        };
+
+        append_json_line(&event, policy, Some(&assessment))
+    }
+
     fn emit_process_start(process: &ProcessInfo, executable_path: String, policy: Option<&PolicyBundle>) -> io::Result<()> {
         let now = OffsetDateTime::now_utc();
         let timestamp = now
@@ -247,10 +344,14 @@ mod service {
             destination_host: None,
         };
 
-        append_json_line(&event, policy)
+        append_json_line(&event, policy, None)
     }
 
-    fn append_json_line(event: &SecurityEvent, policy: Option<&PolicyBundle>) -> io::Result<()> {
+    fn append_json_line(
+        event: &SecurityEvent,
+        policy: Option<&PolicyBundle>,
+        ransomware: Option<&RansomwareAssessment>,
+    ) -> io::Result<()> {
         let path = Path::new(EVENT_LOG_PATH);
         if let Some(parent) = path.parent() {
             create_dir_all(parent)?;
@@ -263,7 +364,8 @@ mod service {
                 "policy_version": decision.policy_version,
                 "decision": format!("{:?}", decision.action).to_lowercase(),
                 "would_deny": decision.would_deny,
-                "enforcement": "shadow"
+                "enforcement": "shadow",
+                "ransomware": ransomware
             })
         } else {
             serde_json::json!({
@@ -271,7 +373,8 @@ mod service {
                 "policy_version": null,
                 "decision": "allow",
                 "would_deny": false,
-                "enforcement": "telemetry_only"
+                "enforcement": "telemetry_only",
+                "ransomware": ransomware
             })
         };
         serde_json::to_writer(&mut file, &record)?;
@@ -286,6 +389,8 @@ mod service {
         telemetry_detail: &str,
         network_state: CapabilityState,
         network_detail: &str,
+        file_state: CapabilityState,
+        file_detail: &str,
     ) -> AgentHealth {
         let policy_version = policy.map(|policy| policy.version);
         let policy_state = if policy.is_some() {
@@ -320,6 +425,20 @@ mod service {
                 },
             )
             .with_capability("network_enforcement", network_state, network_detail)
+            .with_capability("filesystem_telemetry", file_state, file_detail)
+            .with_capability(
+                "ransomware_detection",
+                if file_state == CapabilityState::Active {
+                    CapabilityState::Shadow
+                } else {
+                    CapabilityState::Unavailable
+                },
+                if file_state == CapabilityState::Active {
+                    "unique-path Kernel-File ETW correlation enabled; detection only"
+                } else {
+                    "Kernel-File path telemetry unavailable; ransomware correlation disabled"
+                },
+            )
     }
 
     fn select_network_enforcement(
