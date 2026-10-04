@@ -3,12 +3,12 @@ use serde_json::Value;
 use std::{
     fs,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
 const MAX_RECORDS_PER_CYCLE: usize = 4096;
-const ANCHOR_BYTES: u64 = 64;
+const CHECKPOINT_PREFIX_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IngestStats {
@@ -17,10 +17,11 @@ pub struct IngestStats {
     pub bytes_advanced: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SourceCheckpoint {
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+struct TailCheckpoint {
     offset: u64,
-    anchor_hash: u64,
+    prefix_len: usize,
+    prefix_hash: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -50,18 +51,20 @@ impl JsonlTailer {
         };
 
         let source_len = file.metadata()?.len();
-        let checkpoint = self.read_checkpoint()?;
+        let checkpoint = self.read_checkpoint()?.unwrap_or_default();
 
-        let mut offset = checkpoint.as_ref().map_or(0, |saved| saved.offset);
-        if offset > source_len {
-            offset = 0;
-        } else if let Some(saved) = checkpoint.as_ref() {
-            if saved.offset > 0
-                && self.anchor_hash(saved.offset)? != saved.anchor_hash
-            {
-                offset = 0;
-            }
-        }
+        let fingerprint_matches = if checkpoint.offset == 0 || checkpoint.prefix_len == 0 {
+            true
+        } else {
+            prefix_fingerprint(&file, checkpoint.prefix_len)?
+                .is_some_and(|hash| hash == checkpoint.prefix_hash)
+        };
+
+        let offset = if checkpoint.offset > source_len || !fingerprint_matches {
+            0
+        } else {
+            checkpoint.offset
+        };
 
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(offset))?;
@@ -112,51 +115,44 @@ impl JsonlTailer {
         }
 
         if committed_offset != offset {
-            self.write_checkpoint(committed_offset)?;
+            let prefix_len = committed_offset.min(CHECKPOINT_PREFIX_BYTES as u64) as usize;
+            let prefix_hash =
+                prefix_fingerprint(reader.get_ref(), prefix_len)?.unwrap_or_default();
+
+            self.write_checkpoint(TailCheckpoint {
+                offset: committed_offset,
+                prefix_len,
+                prefix_hash,
+            })?;
             stats.bytes_advanced = committed_offset.saturating_sub(offset);
         }
 
         Ok(stats)
     }
 
-    fn read_checkpoint(&self) -> io::Result<Option<SourceCheckpoint>> {
-        let raw = match fs::read_to_string(&self.offset_path) {
-            Ok(value) => value,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error),
-        };
+    fn read_checkpoint(&self) -> io::Result<Option<TailCheckpoint>> {
+        match fs::read_to_string(&self.offset_path) {
+            Ok(value) => {
+                if let Ok(checkpoint) = serde_json::from_str::<TailCheckpoint>(&value) {
+                    return Ok(Some(checkpoint));
+                }
 
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
+                // Backward compatibility with the original plain integer offset.
+                Ok(value.trim().parse::<u64>().ok().map(|offset| TailCheckpoint {
+                    offset,
+                    prefix_len: 0,
+                    prefix_hash: 0,
+                }))
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
         }
-
-        if let Ok(checkpoint) = serde_json::from_str::<SourceCheckpoint>(trimmed) {
-            return Ok(Some(checkpoint));
-        }
-
-        // Backward compatibility with the initial plain numeric checkpoint.
-        if let Ok(offset) = trimmed.parse::<u64>() {
-            return Ok(Some(SourceCheckpoint {
-                offset,
-                anchor_hash: self.anchor_hash(offset).unwrap_or_default(),
-            }));
-        }
-
-        Ok(None)
     }
 
-    fn write_checkpoint(&self, offset: u64) -> io::Result<()> {
+    fn write_checkpoint(&self, checkpoint: TailCheckpoint) -> io::Result<()> {
         if let Some(parent) = self.offset_path.parent() {
             fs::create_dir_all(parent)?;
         }
-
-        let checkpoint = SourceCheckpoint {
-            offset,
-            anchor_hash: self.anchor_hash(offset)?,
-        };
-        let encoded = serde_json::to_vec(&checkpoint)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
 
         let file_name = self
             .offset_path
@@ -167,40 +163,43 @@ impl JsonlTailer {
 
         {
             let mut file = fs::File::create(&tmp)?;
-            file.write_all(&encoded)?;
+            serde_json::to_writer(&mut file, &checkpoint)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
             file.write_all(b"\n")?;
             file.sync_all()?;
         }
 
         fs::rename(tmp, &self.offset_path)
     }
-
-    fn anchor_hash(&self, offset: u64) -> io::Result<u64> {
-        hash_anchor(&self.source_path, offset)
-    }
 }
 
-fn hash_anchor(path: &Path, offset: u64) -> io::Result<u64> {
-    let mut file = fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    let bounded_offset = offset.min(len);
-    let start = bounded_offset.saturating_sub(ANCHOR_BYTES);
-    let size = bounded_offset.saturating_sub(start) as usize;
-
-    file.seek(SeekFrom::Start(start))?;
-    let mut bytes = vec![0u8; size];
-    if size > 0 {
-        file.read_exact(&mut bytes)?;
+fn prefix_fingerprint(file: &fs::File, prefix_len: usize) -> io::Result<Option<u64>> {
+    if prefix_len == 0 {
+        return Ok(None);
     }
 
-    // FNV-1a 64-bit is sufficient here as a rotation/replacement anchor.
-    // This is not a cryptographic integrity mechanism; signed policy uses Ed25519.
+    let mut clone = file.try_clone()?;
+    clone.seek(SeekFrom::Start(0))?;
+
+    let mut remaining = prefix_len;
+    let mut buffer = [0u8; CHECKPOINT_PREFIX_BYTES];
     let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
+
+    while remaining > 0 {
+        let take = remaining.min(buffer.len());
+        let read = clone.read(&mut buffer[..take])?;
+        if read == 0 {
+            return Ok(None);
+        }
+
+        for byte in &buffer[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        remaining -= read;
     }
-    Ok(hash)
+
+    Ok(Some(hash))
 }
 
 #[cfg(test)]
@@ -246,7 +245,7 @@ mod tests {
         let offset = dir.path().join("events.offset");
         fs::write(&source, b"{\"id\":1}\n{\"id\":2}").unwrap();
 
-        let tailer = JsonlTailer::new(source.clone(), offset.clone());
+        let tailer = JsonlTailer::new(source.clone(), offset);
         let mut ids = Vec::new();
         tailer
             .ingest(|value| {
@@ -278,9 +277,10 @@ mod tests {
         let offset = dir.path().join("events.offset");
         fs::write(&source, b"{\"id\":1}\n").unwrap();
 
-        let tailer = JsonlTailer::new(source.clone(), offset.clone());
+        let tailer = JsonlTailer::new(source.clone(), offset);
         tailer.ingest(|_| Ok(())).unwrap();
 
+        // Same byte length as the original file: offset alone cannot detect replacement.
         fs::write(&source, b"{\"id\":9}\n").unwrap();
 
         let mut ids = Vec::new();
@@ -295,16 +295,17 @@ mod tests {
     }
 
     #[test]
-    fn shorter_truncation_resets_saved_offset() {
+    fn append_preserves_checkpoint_prefix() {
         let dir = tempdir().unwrap();
         let source = dir.path().join("events.jsonl");
         let offset = dir.path().join("events.offset");
-        fs::write(&source, b"{\"id\":12345}\n").unwrap();
+        fs::write(&source, b"{\"id\":1}\n").unwrap();
 
         let tailer = JsonlTailer::new(source.clone(), offset);
         tailer.ingest(|_| Ok(())).unwrap();
 
-        fs::write(&source, b"{\"id\":2}\n").unwrap();
+        let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+        file.write_all(b"{\"id\":2}\n").unwrap();
 
         let mut ids = Vec::new();
         tailer
