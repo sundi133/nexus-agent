@@ -28,9 +28,8 @@ $(SHADOW_TARGET): $(SHADOW_SOURCES)
 package-syntax:
 	xcrun swiftc -typecheck -swift-version 5 Package/HostApp/Sources/*.swift -framework SwiftUI -framework SystemExtensions -framework NetworkExtension
 	xcrun swiftc -typecheck -swift-version 5 Package/FilterData/Sources/*.swift -framework NetworkExtension
-	xcrun swiftc -typecheck -swift-version 5 Package/FilterControl/Sources/*.swift -framework NetworkExtension
 	xcrun --sdk macosx clang $(CFLAGS) -I../../core/include -fsyntax-only Package/SystemExtension/Sources/main.c
-	plutil -lint Package/HostApp/Info.plist Package/HostApp/NexusAgent.entitlements Package/SystemExtension/Info.plist Package/SystemExtension/NexusEndpointExtension.entitlements Package/FilterData/Info.plist Package/FilterData/NexusFilterData.entitlements Package/FilterControl/Info.plist Package/FilterControl/NexusFilterControl.entitlements
+	plutil -lint Package/HostApp/Info.plist Package/HostApp/NexusAgent.entitlements Package/SystemExtension/Info.plist Package/SystemExtension/NexusEndpointExtension.entitlements Package/FilterData/Info.plist Package/FilterData/NexusFilterData.entitlements
 	ruby -e 'require "yaml"; YAML.load_file("Package/project.yml"); puts "project.yml OK"'
 
 $(ENFORCE_TARGET): $(ENFORCE_SOURCES)
