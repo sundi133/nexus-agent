@@ -29,9 +29,11 @@ jobs:
       - name: Parse installer PowerShell scripts
         shell: pwsh
         run: |
+          $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "platforms/windows/installer/Install-NexusAgent.ps1"), [ref]$null, [ref]$errors) | Out-Null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "platforms/windows/installer/Install-NexusAgent.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          $tokens = $null
           $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "platforms/windows/installer/Uninstall-NexusAgent.ps1"), [ref]$null, [ref]$errors) | Out-Null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "platforms/windows/installer/Uninstall-NexusAgent.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
