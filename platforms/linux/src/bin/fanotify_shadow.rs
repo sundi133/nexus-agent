@@ -10,6 +10,9 @@ fn main() -> std::io::Result<()> {
 
 #[cfg(target_os = "linux")]
 mod linux_shadow {
+    use nexus_agent_core::{
+        verify_signed_policy, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope,
+    };
     use std::{
         ffi::CString,
         io,
@@ -20,11 +23,15 @@ mod linux_shadow {
     };
 
     const BUFFER_SIZE: usize = 64 * 1024;
+    const POLICY_PATH: &str = "/var/lib/votal/nexus/policy.signed.json";
+    const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
     pub fn run() -> io::Result<()> {
         let fan_fd = start("/")?;
+        let policy = load_verified_policy();
         eprintln!(
-            "nexus-fanotify-shadow: FAN_OPEN_EXEC_PERM active; every decision is FAN_ALLOW"
+            "nexus-fanotify-shadow: FAN_OPEN_EXEC_PERM active; every decision is FAN_ALLOW; policy_loaded={}",
+            policy.is_some()
         );
 
         let mut buffer = vec![0u8; BUFFER_SIZE];
@@ -44,7 +51,7 @@ mod linux_shadow {
                 continue;
             }
 
-            process_events(fan_fd, &buffer[..read_count as usize])?;
+            process_events(fan_fd, &buffer[..read_count as usize], policy.as_ref())?;
         }
     }
 
@@ -81,7 +88,11 @@ mod linux_shadow {
         Ok(fan_fd)
     }
 
-    fn process_events(fan_fd: RawFd, buffer: &[u8]) -> io::Result<()> {
+    fn process_events(
+        fan_fd: RawFd,
+        buffer: &[u8],
+        policy: Option<&PolicyBundle>,
+    ) -> io::Result<()> {
         let mut offset = 0usize;
 
         while offset + size_of::<libc::fanotify_event_metadata>() <= buffer.len() {
@@ -123,9 +134,25 @@ mod linux_shadow {
                 }
 
                 let path = fd_path(metadata.fd).unwrap_or_else(|| "<unknown>".to_string());
+                let would_deny = policy
+                    .map(|policy| {
+                        let event = SecurityEvent {
+                            event_id: "linux-shadow".to_string(),
+                            timestamp: String::new(),
+                            device_id: String::new(),
+                            kind: EventKind::ProcessExec,
+                            pid: Some(metadata.pid as u32),
+                            parent_pid: None,
+                            executable_path: Some(path.clone()),
+                            target_path: None,
+                            destination_host: None,
+                        };
+                        policy.evaluate(&event).would_deny
+                    })
+                    .unwrap_or(false);
                 eprintln!(
-                    "nexus-fanotify-shadow: pid={} target={} would_deny=false action=allow response_latency_us={}",
-                    metadata.pid, path, latency_us
+                    "nexus-fanotify-shadow: pid={} target={} would_deny={} action=allow response_latency_us={}",
+                    metadata.pid, path, would_deny, latency_us
                 );
                 unsafe { libc::close(metadata.fd) };
             }
@@ -138,6 +165,16 @@ mod linux_shadow {
         }
 
         Ok(())
+    }
+
+    fn load_verified_policy() -> Option<PolicyBundle> {
+        if POLICY_PUBLIC_KEY.iter().all(|byte| *byte == 0) {
+            return None;
+        }
+
+        let envelope_bytes = std::fs::read(POLICY_PATH).ok()?;
+        let envelope: SignedPolicyEnvelope = serde_json::from_slice(&envelope_bytes).ok()?;
+        verify_signed_policy(&envelope, &POLICY_PUBLIC_KEY).ok()
     }
 
     fn fd_path(fd: RawFd) -> Option<String> {
