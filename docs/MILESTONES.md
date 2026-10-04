@@ -100,3 +100,16 @@ Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS de
 - Linux systemd service under dedicated non-root identity
 - macOS LaunchDaemon under dedicated service identity
 - remaining: production enrollment/device identity issuance, token rotation, server-side deduplication and fleet rollout validation
+
+
+## M8 — AI agent / MCP action telemetry
+Status: normalized event model and authenticated localhost ingestion bridge implemented; tool-specific authorization/blocking remains.
+
+- normalized `AgentActionEvent` for MCP tool calls, resource reads, agent commands, browser actions, network requests, and file operations
+- strict size/cardinality validation and JSON schema
+- loopback-only `POST /v1/agent-actions` bridge
+- separate local bearer token with constant-time comparison
+- 64 KiB request-body cap and 16 KiB header cap
+- no raw prompt or raw tool-argument capture by default
+- accepted actions use the same durable spool/control-plane event path as endpoint telemetry
+- remaining: OS-bound agent identity, signed/local attestation for producers, policy selectors for MCP server/tool/action, and synchronous allow/deny integration with supported agent runtimes
