@@ -86,7 +86,7 @@ Status: signed response policy and guarded terminate-process containment are imp
 
 
 ## M7 — managed control-plane runtime
-Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS deployment scaffolds; production control-plane integration and fleet validation remain.
+Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS deployment scaffolds, one-time HTTPS enrollment client, server-issued device credential bundles, and hot credential replacement; production server issuance/renewal integration and fleet validation remain.
 
 - HTTPS-only policy, health, and telemetry transport
 - bearer token loaded from a local protected file
@@ -99,7 +99,10 @@ Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS de
 - Windows SCM service under LocalService
 - Linux systemd service under dedicated non-root identity
 - macOS LaunchDaemon under dedicated service identity
-- remaining: production enrollment/device identity issuance, token rotation, server-side deduplication and fleet rollout validation
+- one-time HTTPS bootstrap enrollment via `nexus-enroll`
+- server-issued `device_id + bearer_token + expires_at` credential bundle
+- transport re-reads credentials on every request for restart-free atomic rotation
+- remaining: production enrollment/renewal server implementation, server-side event deduplication, and fleet rollout validation
 
 
 ## M8 — AI agent / MCP action telemetry
