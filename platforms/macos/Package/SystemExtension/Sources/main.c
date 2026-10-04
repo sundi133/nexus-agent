@@ -268,6 +268,15 @@ static void handle_auth_exec(es_client_t *client, const es_message_t *message) {
               path.length);
     pthread_rwlock_unlock(&g_policy_lock);
 
+    if (g_ransomware_tracker != NULL &&
+        (decision == NEXUS_DECISION_DENY || decision == NEXUS_DECISION_ALERT)) {
+        pid_t pid = audit_token_to_pid(message->process->audit_token);
+        (void)nexus_ransomware_mark_suspicious_process(
+            g_ransomware_tracker,
+            (uint32_t)pid,
+            monotonic_ms());
+    }
+
     es_auth_result_t result =
         decision == NEXUS_DECISION_DENY ? ES_AUTH_RESULT_DENY : ES_AUTH_RESULT_ALLOW;
 
@@ -318,6 +327,25 @@ static void observe_file_activity(const es_message_t *message) {
             file->path.length,
             renamed);
 
+    NexusRansomwareResponse response = {
+        .matched = false,
+        .would_enforce = false,
+        .enforce = false,
+        .action = 255
+    };
+
+    pthread_rwlock_rdlock(&g_policy_lock);
+    NexusPolicyHandle *policy = g_policy;
+    if (policy != NULL) {
+        response = nexus_ransomware_plan_response(
+            policy,
+            g_ransomware_tracker,
+            (uint32_t)pid,
+            assessment.score,
+            assessment.severity);
+    }
+    pthread_rwlock_unlock(&g_policy_lock);
+
     if (assessment.severity >= 2 && assessment.severity != 255) {
         os_log_error(
             g_log,
@@ -327,6 +355,16 @@ static void observe_file_activity(const es_message_t *message) {
             assessment.severity,
             (int)file->path.length,
             file->path.data);
+    }
+
+    if (response.matched) {
+        os_log_error(
+            g_log,
+            "ransomware_response pid=%{public}d action=%{public}u would_enforce=%{public}s enforce=%{public}s",
+            pid,
+            response.action,
+            response.would_enforce ? "true" : "false",
+            response.enforce ? "true" : "false");
     }
 }
 
