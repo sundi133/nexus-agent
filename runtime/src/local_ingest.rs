@@ -235,14 +235,28 @@ pub fn spawn_local_ingest(
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     listener.set_nonblocking(true)?;
 
+    let active_connections = Arc::new(AtomicUsize::new(0));
     Ok(thread::spawn(move || loop {
         match listener.accept() {
             Ok((stream, _)) => {
+                if active_connections.fetch_add(1, Ordering::AcqRel) >= 64 {
+                    active_connections.fetch_sub(1, Ordering::AcqRel);
+                    drop(stream);
+                    continue;
+                }
+
                 let peer = PeerIdentity {
                     transport: "tcp_loopback",
                     ..PeerIdentity::default()
                 };
-                let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+                let auth = auth.clone();
+                let policy = policy.clone();
+                let sender = sender.clone();
+                let active = active_connections.clone();
+                thread::spawn(move || {
+                    let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+                    active.fetch_sub(1, Ordering::AcqRel);
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(25));
@@ -274,14 +288,32 @@ pub fn spawn_local_ingest_unix(
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o660))?;
     listener.set_nonblocking(true)?;
 
+    let active_connections = Arc::new(AtomicUsize::new(0));
     Ok(thread::spawn(move || loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                let peer = unix_peer_identity(&stream).unwrap_or_else(|_| PeerIdentity {
-                    transport: "unix_socket_unattested",
-                    ..PeerIdentity::default()
+                if active_connections.fetch_add(1, Ordering::AcqRel) >= 64 {
+                    active_connections.fetch_sub(1, Ordering::AcqRel);
+                    drop(stream);
+                    continue;
+                }
+
+                let peer = match unix_peer_identity(&stream) {
+                    Ok(peer) => peer,
+                    Err(_) => {
+                        active_connections.fetch_sub(1, Ordering::AcqRel);
+                        drop(stream);
+                        continue;
+                    }
+                };
+                let auth = auth.clone();
+                let policy = policy.clone();
+                let sender = sender.clone();
+                let active = active_connections.clone();
+                thread::spawn(move || {
+                    let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+                    active.fetch_sub(1, Ordering::AcqRel);
                 });
-                let _ = handle_connection(stream, &auth, &policy, &sender, peer);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(25));
