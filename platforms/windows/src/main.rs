@@ -1028,6 +1028,7 @@ mod service {
                     executable_paths: executables.into_iter().map(str::to_string).collect(),
                     destination_hosts: destinations.into_iter().map(str::to_string).collect(),
                 }],
+                agent_action_rules: vec![],
                 ransomware_response: None,
             }
         }
