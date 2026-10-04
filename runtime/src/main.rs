@@ -1,7 +1,8 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use nexus_agent_core::{AgentHealth, CapabilityState};
 use nexus_agent_runtime::{
-    DiskSpool, HttpControlPlane, JsonlTailer, PolicyStore, RuntimeConfig, RuntimeWorker,
+    spawn_local_ingest, DiskSpool, HttpControlPlane, JsonlTailer, PolicyStore, RuntimeConfig,
+    RuntimeWorker,
 };
 use std::{
     env, fs, io,
@@ -38,6 +39,16 @@ fn load_public_key(path: &Path) -> Result<[u8; 32], String> {
     bytes
         .try_into()
         .map_err(|_| "policy public key must decode to exactly 32 bytes".to_string())
+}
+
+fn load_local_ingest_token(path: &Path) -> Result<String, String> {
+    let token = fs::read_to_string(path)
+        .map_err(|error| format!("cannot read local ingest token: {error}"))?;
+    let token = token.trim().to_string();
+    if token.len() < 32 || token.len() > 512 || token.contains(['\r', '\n']) {
+        return Err("local ingest token must be 32-512 non-newline characters".to_string());
+    }
+    Ok(token)
 }
 
 fn load_config(path: &Path) -> Result<RuntimeConfig, String> {
@@ -94,6 +105,22 @@ fn run_runtime_loop(
         config.event_source_path.clone(),
         config.event_offset_path.clone(),
     );
+
+    let (action_tx, action_rx) = mpsc::channel();
+    let local_ingest_enabled = match (
+        config.local_ingest_port,
+        config.local_ingest_token_file.as_deref(),
+    ) {
+        (Some(port), Some(token_path)) => {
+            let token = load_local_ingest_token(token_path)?;
+            spawn_local_ingest(port, token, action_tx)
+                .map_err(|error| format!("cannot start local agent-action ingest: {error}"))?;
+            true
+        }
+        (None, None) => false,
+        _ => return Err("local ingest configuration is incomplete".to_string()),
+    };
+
     let mut previous_cycle_errors: Vec<String> = Vec::new();
 
     loop {
@@ -114,7 +141,44 @@ fn run_runtime_loop(
             }
         }
 
+        let mut agent_actions_ingested = 0usize;
+        while agent_actions_ingested < 1024 {
+            match action_rx.try_recv() {
+                Ok(event) => {
+                    if let Err(error) = worker.enqueue(&event) {
+                        previous_cycle_errors.push(format!(
+                            "agent-action spool failed: {error}"
+                        ));
+                        break;
+                    }
+                    agent_actions_ingested += 1;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    previous_cycle_errors.push(
+                        "local agent-action ingest channel disconnected".to_string(),
+                    );
+                    break;
+                }
+            }
+        }
+
         let mut health = read_health(&config.health_source_path);
+        health = health.with_capability(
+            "agent_action_ingest",
+            if local_ingest_enabled {
+                CapabilityState::Active
+            } else {
+                CapabilityState::Unavailable
+            },
+            if local_ingest_enabled {
+                format!(
+                    "localhost authenticated MCP/agent-action bridge active; ingested_this_cycle={agent_actions_ingested}"
+                )
+            } else {
+                "local MCP/agent-action bridge not configured".to_string()
+            },
+        );
 
         if let Ok(stats) = worker.spool().stats() {
             health = health.with_capability(
