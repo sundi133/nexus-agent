@@ -21,6 +21,7 @@ pub struct RuntimeConfig {
     pub health_source_path: PathBuf,
     pub local_ingest_port: Option<u16>,
     pub local_ingest_socket_path: Option<PathBuf>,
+    pub local_ingest_pipe_name: Option<String>,
     pub local_ingest_token_file: Option<PathBuf>,
     #[serde(default)]
     pub local_ingest_producers: Vec<LocalProducerConfig>,
@@ -85,21 +86,29 @@ impl RuntimeConfig {
             .local_ingest_socket_path
             .as_ref()
             .is_some_and(|path| !path.as_os_str().is_empty());
+        let pipe_name_present = self
+            .local_ingest_pipe_name
+            .as_ref()
+            .is_some_and(|name| !name.trim().is_empty() && name.len() <= 240);
 
         match (
             &self.local_ingest_port,
             socket_path_present,
+            pipe_name_present,
             &self.local_ingest_token_file,
             self.local_ingest_producers.as_slice(),
         ) {
-            (None, false, None, []) => {}
-            (Some(port), false, Some(path), [])
+            (None, false, false, None, []) => {}
+            (Some(port), false, false, Some(path), [])
                 if *port >= 1024 && !path.as_os_str().is_empty() => {}
-            (Some(port), false, None, producers)
+            (Some(port), false, false, None, producers)
                 if *port >= 1024 && !producers.is_empty() => {
                     validate_local_producers(producers)?;
                 }
-            (None, true, None, producers) if !producers.is_empty() => {
+            (None, true, false, None, producers) if !producers.is_empty() => {
+                validate_local_producers(producers)?;
+            }
+            (None, false, true, None, producers) if !producers.is_empty() => {
                 validate_local_producers(producers)?;
             }
             _ => return Err(ConfigError::InvalidLocalIngest),
@@ -198,6 +207,7 @@ mod tests {
             health_source_path: "health.json".into(),
             local_ingest_port: None,
             local_ingest_socket_path: None,
+            local_ingest_pipe_name: None,
             local_ingest_token_file: None,
             local_ingest_producers: vec![],
             cycle_interval_ms: 1000,
@@ -272,6 +282,22 @@ mod tests {
             token_file: "agent-a.token".into(),
             expected_uid: Some(1000),
             executable_paths: vec!["/usr/local/bin/agent-a".into()],
+        }];
+        assert!(cfg.validate().is_ok());
+
+        cfg.local_ingest_port = Some(8765);
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
+    }
+
+    #[test]
+    fn validates_windows_named_pipe_mode() {
+        let mut cfg = config();
+        cfg.local_ingest_pipe_name = Some("VotalNexusAgentActions".into());
+        cfg.local_ingest_producers = vec![LocalProducerConfig {
+            agent_id: "agent-a".into(),
+            token_file: "agent-a.token".into(),
+            expected_uid: None,
+            executable_paths: vec![r"C:\Program Files\Agent\agent.exe".into()],
         }];
         assert!(cfg.validate().is_ok());
 
