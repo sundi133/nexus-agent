@@ -4,6 +4,36 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PolicyVersionGuard {
+    highest_accepted: Option<u64>,
+}
+
+impl PolicyVersionGuard {
+    pub fn new(highest_accepted: Option<u64>) -> Self {
+        Self { highest_accepted }
+    }
+
+    pub fn highest_accepted(&self) -> Option<u64> {
+        self.highest_accepted
+    }
+
+    pub fn accepts(&self, version: u64) -> bool {
+        version > 0 && self.highest_accepted.is_none_or(|current| version >= current)
+    }
+
+    pub fn accept(&mut self, version: u64) -> bool {
+        if !self.accepts(version) {
+            return false;
+        }
+        self.highest_accepted = Some(
+            self.highest_accepted
+                .map_or(version, |current| current.max(version)),
+        );
+        true
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityState {
@@ -669,6 +699,16 @@ mod tests {
         let mut event = event();
         event.destination_host = Some("BAD.EXAMPLE".into());
         assert_eq!(policy.evaluate(&event).action, DecisionAction::Deny);
+    }
+
+    #[test]
+    fn policy_version_guard_rejects_downgrade() {
+        let mut guard = PolicyVersionGuard::new(Some(20));
+        assert!(!guard.accept(19));
+        assert_eq!(guard.highest_accepted(), Some(20));
+        assert!(guard.accept(20));
+        assert!(guard.accept(21));
+        assert_eq!(guard.highest_accepted(), Some(21));
     }
 
     #[test]
