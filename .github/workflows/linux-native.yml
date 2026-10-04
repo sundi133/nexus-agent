@@ -1,0 +1,24 @@
+name: linux-native-build
+
+on:
+  push:
+    paths:
+      - "platforms/linux/**"
+      - "core/**"
+      - ".github/workflows/linux-native.yml"
+  pull_request:
+    paths:
+      - "platforms/linux/**"
+      - "core/**"
+      - ".github/workflows/linux-native.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Linux adapter
+        run: cargo test --manifest-path platforms/linux/Cargo.toml
+      - name: Build Linux adapter
+        run: cargo build --release --manifest-path platforms/linux/Cargo.toml
