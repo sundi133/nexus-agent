@@ -47,7 +47,7 @@ Status: host application, Endpoint Security system extension, signed-policy veri
 - remaining: production signing/notarization, entitlement approval, MDM profiles and device validation
 
 ## M5 — Windows
-Status: ETW process + file telemetry, unique-path ransomware correlation, signed-policy classification, health reporting, anti-rollback watermark, narrow dynamic WFP enforcement, and policy-gated terminate-process ransomware containment are implemented. General process-create blocking, broader network policy, installer/signing, and optional kernel components remain.
+Status: ETW process + file telemetry, unique-path ransomware correlation, signed-policy classification, health reporting, anti-rollback watermark, multi-rule dynamic WFP enforcement with app scoping, live policy reload, LocalService managed-runtime packaging, and policy-gated terminate-process ransomware containment are implemented. General process-create blocking, MSI/code-signing, and optional kernel components remain.
 
 - Windows service
 - ETW telemetry
@@ -56,7 +56,7 @@ Status: ETW process + file telemetry, unique-path ransomware correlation, signed
 - signed installer/driver pipeline
 
 ## M6 — Linux
-Status: fanotify audit collection, signed-policy classification, permission-event shadow/controlled enforcement harnesses, ransomware unique-path correlation, health reporting, anti-rollback watermark, signed-policy nftables lease enforcement, and policy-gated terminate-process ransomware containment are implemented. eBPF telemetry/enforcement and broader distro/kernel validation remain.
+Status: fanotify audit collection, signed-policy classification, permission-event shadow/controlled enforcement harnesses, ransomware unique-path correlation, health reporting, anti-rollback watermark, multi-destination nftables lease enforcement with live policy reload/last-known-good retention, non-root managed-runtime packaging, and policy-gated terminate-process ransomware containment are implemented. eBPF telemetry/enforcement and broader distro/kernel validation remain.
 
 - Rust daemon
 - eBPF telemetry with explicit kernel support matrix
@@ -83,3 +83,20 @@ Status: signed response policy and guarded terminate-process containment are imp
 - local containment-disable switches and self/system PID guards
 - only `terminate_process` is currently executable as a ransomware response
 - `network_isolate` and combined response actions remain non-destructive/unsupported until dedicated isolation semantics are implemented
+
+
+## M7 — managed control-plane runtime
+Status: implemented as a separate Rust sidecar with Linux, Windows, and macOS deployment scaffolds; production control-plane integration and fleet validation remain.
+
+- HTTPS-only policy, health, and telemetry transport
+- bearer token loaded from a local protected file
+- Ed25519 policy verification before atomic activation
+- version watermark anti-rollback
+- durable bounded disk spool with acknowledgement after successful upload
+- JSONL collector tailing with persisted offset and file-replacement anchor detection
+- at-least-once telemetry semantics
+- runtime spool/transport health merged into endpoint health
+- Windows SCM service under LocalService
+- Linux systemd service under dedicated non-root identity
+- macOS LaunchDaemon under dedicated service identity
+- remaining: production enrollment/device identity issuance, token rotation, server-side deduplication and fleet rollout validation
