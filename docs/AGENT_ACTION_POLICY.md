@@ -128,3 +128,32 @@ The runtime rejects duplicate configured agent IDs and duplicate token values. A
 The older `local_ingest_token_file` mode remains available for compatibility, but it authenticates bridge access only. In that mode the runtime clears any request-supplied `agent_id` before policy evaluation, so rules containing `agent_ids` cannot be satisfied by self-assertion.
 
 Credential binding is stronger than trusting request JSON, but it is not yet OS/process attestation. Protect each producer token with platform ACLs and give it only to the intended runtime/process. A later identity layer should bind producers to OS code-signing/process identity or another local attestation mechanism.
+
+
+## Kernel peer attestation on Unix
+
+For Linux/macOS, the strongest local bridge mode uses a Unix-domain socket instead of loopback TCP:
+
+```json
+{
+  "local_ingest_port": null,
+  "local_ingest_socket_path": "/run/votal/nexus/agent-actions.sock",
+  "local_ingest_token_file": null,
+  "local_ingest_producers": [
+    {
+      "agent_id": "coding-agent",
+      "token_file": "/var/lib/votal/nexus/producers/coding-agent.token",
+      "expected_uid": 1000,
+      "executable_paths": ["/usr/local/bin/coding-agent"]
+    }
+  ]
+}
+```
+
+The socket is created with mode `0660`. The token still proves the producer credential, while the kernel peer credentials add an independent local identity signal.
+
+On Linux, Nexus reads `SO_PEERCRED` and records the peer PID, UID, GID, and `/proc/<pid>/exe`. If `expected_uid` or `executable_paths` are configured, the request is rejected unless the kernel-derived peer evidence matches. A request-supplied PID that disagrees with the kernel PID is rejected; otherwise the event PID is replaced with the kernel PID before policy evaluation.
+
+On macOS, the current Unix path uses peer effective UID/GID from the kernel. `expected_uid` is enforceable there. Process executable/code-signature attestation is not yet implemented on macOS, so configuring `executable_paths` for macOS producers will intentionally fail authentication rather than silently downgrading the check.
+
+Loopback TCP remains for compatibility. It does not provide kernel peer process identity and therefore must not be described as OS/process attestation.
