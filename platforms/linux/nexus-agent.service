@@ -1,0 +1,20 @@
+[Unit]
+Description=Votal Nexus Endpoint Agent
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/opt/votal/nexus/nexus-agent-linux
+Restart=on-failure
+RestartSec=5
+User=root
+Group=root
+NoNewPrivileges=false
+
+# fanotify mount monitoring requires elevated privileges. Tighten these after
+# validating the exact capability set on supported distributions/kernels.
+CapabilityBoundingSet=CAP_SYS_ADMIN
+AmbientCapabilities=CAP_SYS_ADMIN
+
+[Install]
+WantedBy=multi-user.target
