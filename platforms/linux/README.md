@@ -43,3 +43,20 @@ sudo systemctl enable --now nexus-agent
 5. Add eBPF process/network telemetry where the supported kernel permits it.
 6. Add nftables/eBPF network enforcement behind explicit capability checks.
 7. Define kernel/distribution fallback behavior instead of claiming unsupported enforcement is active.
+
+
+## Permission-path harnesses
+
+Two separate binaries keep validation and enforcement isolated:
+
+```sh
+# Always allows execution; measures permission-response latency and would-deny telemetry.
+cargo run --release --manifest-path platforms/linux/Cargo.toml --bin fanotify_shadow
+
+# Controlled enforcement harness. Requires a verified signed policy and a non-zero pinned trust root.
+cargo run --release --manifest-path platforms/linux/Cargo.toml --bin fanotify_enforce
+```
+
+Both require the privileges needed for `FAN_CLASS_CONTENT` permission events. The enforcement harness is fail-open when policy/path context is unavailable. `SIGUSR1` activates an allow-all kill switch; `SIGUSR2` resumes configured policy evaluation.
+
+Start with an isolated VM and a purpose-built test executable. Do not begin enforcement by denying shells, init/systemd, package managers, SSH, security/management agents, or other system-critical binaries.
