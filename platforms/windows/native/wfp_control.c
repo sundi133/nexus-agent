@@ -176,6 +176,35 @@ cleanup:
     return result;
 }
 
+DWORD nexus_wfp_install_exact_ipv4(
+    const wchar_t *remote_ipv4,
+    const wchar_t *application_path)
+{
+    HANDLE engine = NULL;
+    DWORD result = open_engine(&engine);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+
+    result = install_block(engine, remote_ipv4, application_path);
+    FwpmEngineClose0(engine);
+    return result;
+}
+
+DWORD nexus_wfp_remove_all(void)
+{
+    HANDLE engine = NULL;
+    DWORD result = open_engine(&engine);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+
+    result = remove_all(engine);
+    FwpmEngineClose0(engine);
+    return result;
+}
+
+#ifndef NEXUS_WFP_LIBRARY
 static void usage(const wchar_t *program) {
     fwprintf(stderr,
         L"Usage:\n"
@@ -192,22 +221,15 @@ int wmain(int argc, wchar_t **argv) {
         return 2;
     }
 
-    HANDLE engine = NULL;
-    DWORD result = open_engine(&engine);
-    if (result != ERROR_SUCCESS) {
-        print_error(L"FwpmEngineOpen0", result);
-        return (int)result;
-    }
+    DWORD result = ERROR_SUCCESS;
 
     if (_wcsicmp(argv[1], L"install") == 0) {
         if (argc != 3 && argc != 4) {
             usage(argv[0]);
-            FwpmEngineClose0(engine);
             return 2;
         }
 
-        result = install_block(
-            engine,
+        result = nexus_wfp_install_exact_ipv4(
             argv[2],
             argc == 4 ? argv[3] : NULL);
 
@@ -220,17 +242,15 @@ int wmain(int argc, wchar_t **argv) {
     } else if (_wcsicmp(argv[1], L"remove") == 0) {
         if (argc != 2) {
             usage(argv[0]);
-            FwpmEngineClose0(engine);
             return 2;
         }
 
-        result = remove_all(engine);
+        result = nexus_wfp_remove_all();
         if (result == ERROR_SUCCESS) {
             wprintf(L"Removed Nexus WFP test filter and sublayer\n");
         }
     } else {
         usage(argv[0]);
-        FwpmEngineClose0(engine);
         return 2;
     }
 
@@ -238,6 +258,7 @@ int wmain(int argc, wchar_t **argv) {
         print_error(L"WFP operation", result);
     }
 
-    FwpmEngineClose0(engine);
     return result == ERROR_SUCCESS ? 0 : (int)result;
 }
+
+#endif /* NEXUS_WFP_LIBRARY */
