@@ -27,18 +27,61 @@ Health is not part of synchronous enforcement. Failure to report health must not
 
 HTTPS POST with content type `application/x-ndjson`. A successful HTTP status acknowledges the uploaded disk-spool segment. Timeouts and non-success statuses leave the segment for retry.
 
-## Authentication
+## Authentication and enrollment
 
-The current transport accepts a device bearer token from a protected local file and re-reads it for rotation. This is a bootstrap mechanism, not the final enrollment design.
+The runtime supports two mutually exclusive credential sources:
 
-Recommended production progression:
+1. legacy protected bearer-token file; or
+2. a protected server-issued device credential bundle.
 
-1. one-time enrollment token;
-2. device keypair generated locally;
-3. control plane issues a short-lived/device-bound credential;
-4. private key stored using platform-native protection;
-5. routine credential rotation without reinstalling the agent.
+New deployments should use the device credential bundle:
+
+```json
+{
+  "device_id": "device-01JABC...",
+  "bearer_token": "<opaque device credential>",
+  "expires_at": "2026-11-01T00:00:00Z"
+}
+```
+
+The runtime re-reads this file for every policy, health, and event request, so an atomic file replacement rotates the credential without restarting the service. When a bundle is used, requests include:
+
+- `Authorization: Bearer <device credential>`
+- `X-Nexus-Device-Id: <device_id>`
+
+The bearer credential and policy-signing trust root remain separate.
+
+### One-time enrollment
+
+`nexus-enroll` performs the bootstrap exchange:
+
+```sh
+nexus-enroll \
+  --url https://control.example/v1/endpoint/enroll \
+  --bootstrap-token-file /secure/bootstrap.token \
+  --output /var/lib/votal/nexus/device.credential.json
+```
+
+The client POST body contains only:
+
+```json
+{
+  "platform": "linux",
+  "architecture": "x86_64",
+  "agent_version": "0.1.0"
+}
+```
+
+The bootstrap token is sent only as the HTTPS bearer credential and is never included in JSON. The server returns the device credential bundle shown above. Nexus validates it and atomically replaces the output file.
+
+The bootstrap token should be one-time or short-lived and removed after successful enrollment.
+
+### Rotation
+
+Rotation is a file-level atomic operation: issue a newer device credential bundle and atomically replace the configured `device_credential_file`. Because transport reads the credential on every request, no endpoint-agent restart is required.
+
+A future server-side renewal protocol may automate issuance before `expires_at`; the local runtime already supports hot replacement.
 
 ## Trust boundaries
 
-The policy-signing key and transport authentication credential are separate. Compromise of the bearer credential must not allow an attacker to create a valid endpoint policy because policy still requires the pinned Ed25519 signing trust root.
+The policy-signing key and transport authentication credential are separate. Compromise of a device credential must not allow an attacker to create a valid endpoint policy because policy still requires the pinned Ed25519 signing trust root. Enrollment bootstrap tokens must never be accepted as policy-signing material.
