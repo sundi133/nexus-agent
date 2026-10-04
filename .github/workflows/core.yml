@@ -21,4 +21,4 @@ jobs:
           workspaces: core
       - name: Test core
         working-directory: core
-        run: cargo test --locked
+        run: cargo test
