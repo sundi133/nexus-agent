@@ -1,3 +1,4 @@
+mod credentials;
 pub mod config;
 pub mod http;
 pub mod local_ingest;
