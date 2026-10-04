@@ -184,6 +184,7 @@ mod tests {
                 executable_paths: vec!["/tmp/test".into()],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         let payload = serde_json::to_vec(&policy).unwrap();
@@ -235,6 +236,7 @@ mod tests {
                 executable_paths: vec!["/tmp/changed".into()],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         let payload = serde_json::to_vec(&policy).unwrap();
