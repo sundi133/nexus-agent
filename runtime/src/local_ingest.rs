@@ -715,7 +715,74 @@ fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
     })
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+extern "C" {
+    fn proc_pidpath(
+        pid: libc::c_int,
+        buffer: *mut libc::c_void,
+        buffersize: u32,
+    ) -> libc::c_int;
+}
+
+#[cfg(target_os = "macos")]
+fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
+    const SOL_LOCAL: libc::c_int = 0;
+    const LOCAL_PEERPID: libc::c_int = 0x002;
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+
+    let fd = stream.as_raw_fd();
+
+    let mut uid: libc::uid_t = 0;
+    let mut gid: libc::gid_t = 0;
+    if unsafe { libc::getpeereid(fd, &mut uid, &mut gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let mut peer_pid: libc::pid_t = 0;
+    let mut peer_pid_len =
+        std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let pid_result = unsafe {
+        libc::getsockopt(
+            fd,
+            SOL_LOCAL,
+            LOCAL_PEERPID,
+            (&mut peer_pid as *mut libc::pid_t).cast(),
+            &mut peer_pid_len,
+        )
+    };
+    if pid_result != 0 || peer_pid <= 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    let pid = u32::try_from(peer_pid).ok();
+    let executable_path = pid.and_then(|pid| {
+        let mut buffer = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
+        let length = unsafe {
+            proc_pidpath(
+                pid as libc::c_int,
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+            )
+        };
+        if length <= 0 {
+            return None;
+        }
+        let end = buffer.iter().position(|byte| *byte == 0).unwrap_or(length as usize);
+        String::from_utf8(buffer[..end].to_vec()).ok()
+    });
+
+    Ok(PeerIdentity {
+        pid,
+        uid: Some(uid),
+        gid: Some(gid),
+        executable_path,
+        executable_sha256: None,
+        transport: "unix_socket_macos_peerpid",
+    })
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
     let fd = stream.as_raw_fd();
     let mut uid: libc::uid_t = 0;
