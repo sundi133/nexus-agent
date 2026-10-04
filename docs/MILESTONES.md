@@ -117,7 +117,8 @@ Status: normalized event model, authenticated localhost bridge, signed MCP/tool/
 - credential-bound producer identities with anti-spoofing
 - Linux Unix-socket kernel peer attestation (PID/UID/GID/executable path)
 - macOS Unix-socket peer UID/GID attestation
-- remaining: macOS code-signature/process attestation, Windows named-pipe client-process attestation, and adapters that enforce decisions inside specific MCP/agent runtimes
+- Windows named-pipe client PID/executable attestation
+- remaining: macOS code-signature/process attestation, Windows publisher/code-signature attestation, and adapters that enforce decisions inside specific MCP/agent runtimes
 
 
 ## Live policy/control-plane status
