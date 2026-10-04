@@ -118,6 +118,53 @@ impl PolicyBundle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessWindow {
+    pub pid: u32,
+    pub window_started_ms: u64,
+    pub last_event_ms: u64,
+    pub unique_paths_modified: u32,
+    pub rename_count: u32,
+    pub suspicious_process_context: bool,
+}
+
+impl ProcessWindow {
+    pub fn new(pid: u32, now_ms: u64) -> Self {
+        Self {
+            pid,
+            window_started_ms: now_ms,
+            last_event_ms: now_ms,
+            unique_paths_modified: 0,
+            rename_count: 0,
+            suspicious_process_context: false,
+        }
+    }
+
+    pub fn reset(&mut self, now_ms: u64) {
+        self.window_started_ms = now_ms;
+        self.last_event_ms = now_ms;
+        self.unique_paths_modified = 0;
+        self.rename_count = 0;
+        self.suspicious_process_context = false;
+    }
+
+    pub fn observe_file_change(&mut self, now_ms: u64, renamed: bool) {
+        self.last_event_ms = now_ms;
+        self.unique_paths_modified = self.unique_paths_modified.saturating_add(1);
+        if renamed {
+            self.rename_count = self.rename_count.saturating_add(1);
+        }
+    }
+
+    pub fn features(&self) -> RansomwareFeatures {
+        RansomwareFeatures {
+            unique_paths_modified: self.unique_paths_modified,
+            rename_count: self.rename_count,
+            suspicious_process_context: self.suspicious_process_context,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RansomwareFeatures {
     pub unique_paths_modified: u32,
     pub rename_count: u32,
@@ -237,6 +284,17 @@ mod tests {
         let mut event = event();
         event.destination_host = Some("BAD.EXAMPLE".into());
         assert_eq!(policy.evaluate(&event).action, DecisionAction::Deny);
+    }
+
+    #[test]
+    fn process_window_accumulates_file_activity() {
+        let mut window = ProcessWindow::new(99, 1_000);
+        window.observe_file_change(1_010, false);
+        window.observe_file_change(1_020, true);
+        let features = window.features();
+        assert_eq!(features.unique_paths_modified, 2);
+        assert_eq!(features.rename_count, 1);
+        assert_eq!(window.last_event_ms, 1_020);
     }
 
     #[test]
