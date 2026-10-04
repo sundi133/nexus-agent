@@ -50,7 +50,10 @@ pub struct ControlPlaneConfig {
     pub policy_url: String,
     pub health_url: String,
     pub events_url: String,
-    pub bearer_token_file: PathBuf,
+    #[serde(default)]
+    pub bearer_token_file: Option<PathBuf>,
+    #[serde(default)]
+    pub device_credential_file: Option<PathBuf>,
     #[serde(default = "default_connect_timeout_ms")]
     pub connect_timeout_ms: u64,
     #[serde(default = "default_request_timeout_ms")]
@@ -71,6 +74,8 @@ pub enum ConfigError {
     InvalidSpoolLimits,
     #[error("local ingest configuration is invalid")]
     InvalidLocalIngest,
+    #[error("configure exactly one control-plane credential source")]
+    InvalidCredentialConfig,
 }
 
 impl RuntimeConfig {
@@ -181,6 +186,16 @@ impl ControlPlaneConfig {
         if self.connect_timeout_ms == 0 || self.request_timeout_ms == 0 {
             return Err(ConfigError::InvalidTimeout);
         }
+
+        match (
+            self.bearer_token_file.as_ref(),
+            self.device_credential_file.as_ref(),
+        ) {
+            (Some(path), None) if !path.as_os_str().is_empty() => {}
+            (None, Some(path)) if !path.as_os_str().is_empty() => {}
+            _ => return Err(ConfigError::InvalidCredentialConfig),
+        }
+
         Ok(())
     }
 }
@@ -222,7 +237,8 @@ mod tests {
                 policy_url: "https://control.example/policy".into(),
                 health_url: "https://control.example/health".into(),
                 events_url: "https://control.example/events".into(),
-                bearer_token_file: "token".into(),
+                bearer_token_file: Some("token".into()),
+                device_credential_file: None,
                 connect_timeout_ms: 5_000,
                 request_timeout_ms: 30_000,
             },
@@ -242,6 +258,31 @@ mod tests {
             spool_max_bytes: 1024,
             segment_max_bytes: 256,
         }
+    }
+
+    #[test]
+    fn accepts_device_credential_bundle_instead_of_legacy_token() {
+        let mut cfg = config();
+        cfg.control_plane.bearer_token_file = None;
+        cfg.control_plane.device_credential_file = Some("device.credential.json".into());
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn rejects_ambiguous_control_plane_credentials() {
+        let mut cfg = config();
+        cfg.control_plane.device_credential_file = Some("device.credential.json".into());
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCredentialConfig)
+        );
+
+        cfg.control_plane.bearer_token_file = None;
+        cfg.control_plane.device_credential_file = None;
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::InvalidCredentialConfig)
+        );
     }
 
     #[test]
