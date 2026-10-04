@@ -61,11 +61,6 @@ final class FilterDataProvider: NEFilterDataProvider {
         return .allow()
     }
 
-    override func handleRulesChanged() {
-        reloadRules()
-        logger.log("Reloaded network rules blocked_hosts=\(blockedHosts.count)")
-    }
-
     private func reloadRules() {
         guard let defaults = UserDefaults(suiteName: appGroup) else {
             blockedHosts = []
