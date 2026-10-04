@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/agent-action-audit-v1.json",
+  "title": "Votal AI Agent Action Authorization Audit Record",
+  "type": "object",
+  "required": [
+    "event",
+    "decision",
+    "producer_attestation"
+  ],
+  "properties": {
+    "event": {
+      "$ref": "agent-action.schema.json"
+    },
+    "decision": {
+      "type": "object",
+      "required": [
+        "action",
+        "rule_id",
+        "reason",
+        "policy_version",
+        "would_deny"
+      ],
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "allow",
+            "deny",
+            "alert"
+          ]
+        },
+        "rule_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "policy_version": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "would_deny": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "producer_attestation": {
+      "type": "object",
+      "required": [
+        "transport",
+        "credential_bound",
+        "kernel_peer",
+        "pid",
+        "uid",
+        "gid",
+        "executable_path",
+        "executable_sha256"
+      ],
+      "properties": {
+        "transport": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "credential_bound": {
+          "type": "boolean"
+        },
+        "kernel_peer": {
+          "type": "boolean"
+        },
+        "pid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "uid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "gid": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "executable_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "executable_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
