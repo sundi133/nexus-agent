@@ -36,17 +36,18 @@ Status: development harness implemented; entitled-device validation and producti
 - atomic emergency kill switch via signal
 
 ## M4 — macOS production packaging
-Planned.
+Status: host application, Endpoint Security system extension, signed-policy verification, anti-rollback, health reporting, Network Extension content filtering, and policy-gated ransomware containment are implemented in the scaffold. Apple entitlement approval, production signing/notarization, and MDM rollout validation remain.
 
 - Endpoint Security system extension
-- signed/notarized host application
-- policy signature verification and secure enrollment
-- health/status reporting
-- MDM profiles
+- host application / system-extension activation
+- Ed25519 policy verification and anti-rollback watermark
+- machine-readable health/status reporting
 - Network Extension content filtering
+- policy-gated terminate-process ransomware containment
+- remaining: production signing/notarization, entitlement approval, MDM profiles and device validation
 
 ## M5 — Windows
-Status: ETW process telemetry, signed-policy shadow classification, health reporting, anti-rollback watermark, and narrow dynamic WFP enforcement are implemented. Process blocking and broader network policy remain.
+Status: ETW process + file telemetry, unique-path ransomware correlation, signed-policy classification, health reporting, anti-rollback watermark, narrow dynamic WFP enforcement, and policy-gated terminate-process ransomware containment are implemented. General process-create blocking, broader network policy, installer/signing, and optional kernel components remain.
 
 - Windows service
 - ETW telemetry
@@ -55,7 +56,7 @@ Status: ETW process telemetry, signed-policy shadow classification, health repor
 - signed installer/driver pipeline
 
 ## M6 — Linux
-Status: fanotify audit collection, signed-policy shadow classification, permission-event shadow/controlled enforcement harnesses, ransomware unique-path correlation, health reporting, anti-rollback watermark, and controlled nftables blocking are implemented. Signed-policy nftables orchestration and eBPF remain.
+Status: fanotify audit collection, signed-policy classification, permission-event shadow/controlled enforcement harnesses, ransomware unique-path correlation, health reporting, anti-rollback watermark, signed-policy nftables lease enforcement, and policy-gated terminate-process ransomware containment are implemented. eBPF telemetry/enforcement and broader distro/kernel validation remain.
 
 - Rust daemon
 - eBPF telemetry with explicit kernel support matrix
@@ -65,10 +66,20 @@ Status: fanotify audit collection, signed-policy shadow classification, permissi
 
 
 ## Cross-platform ransomware detection
-Status: detection pipeline active in macOS packaged extension and Linux audit collector; Windows file-I/O telemetry remains.
+Status: behavior correlation is wired on macOS Endpoint Security, Windows Kernel-File ETW, and Linux fanotify.
 
 - true unique-path modification tracking per process/window
 - rename-rate signal
 - bounded process cardinality and expiry
 - repeated writes to one file do not inflate unique-path count
-- high/critical findings are detection-only; no heuristic-only process termination
+- execution-policy context is an independent signal
+
+## Cross-platform ransomware response
+Status: signed response policy and guarded terminate-process containment are implemented across macOS, Windows, and Linux.
+
+- disabled / shadow / enforce response modes
+- response score threshold and independent suspicious-process-context requirement
+- destructive enforce-mode policy is rejected unless min_score >= 90 and suspicious context is required
+- local containment-disable switches and self/system PID guards
+- only `terminate_process` is currently executable as a ransomware response
+- `network_isolate` and combined response actions remain non-destructive/unsupported until dedicated isolation semantics are implemented
