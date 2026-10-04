@@ -27,7 +27,7 @@ $(SHADOW_TARGET): $(SHADOW_SOURCES)
 
 package-syntax:
 	xcrun swiftc -typecheck -swift-version 5 Package/HostApp/Sources/*.swift -framework SwiftUI -framework SystemExtensions
-	xcrun --sdk macosx clang $(CFLAGS) -fsyntax-only Package/SystemExtension/Sources/main.c
+	xcrun --sdk macosx clang $(CFLAGS) -I../../core/include -fsyntax-only Package/SystemExtension/Sources/main.c
 	plutil -lint Package/HostApp/Info.plist Package/HostApp/NexusAgent.entitlements Package/SystemExtension/Info.plist Package/SystemExtension/NexusEndpointExtension.entitlements
 	ruby -e 'require "yaml"; YAML.load_file("Package/project.yml"); puts "project.yml OK"'
 
