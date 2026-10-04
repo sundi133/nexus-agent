@@ -100,6 +100,16 @@ impl<T: ControlPlaneTransport> RuntimeWorker<T> {
                     }
                 };
 
+                let batch_id = match self.spool.segment_id(&segment) {
+                    Ok(batch_id) => batch_id,
+                    Err(error) => {
+                        report
+                            .errors
+                            .push(format!("telemetry segment ID failed: {error}"));
+                        break;
+                    }
+                };
+
                 let payload = match self.spool.read_segment(&segment) {
                     Ok(payload) => payload,
                     Err(error) => {
@@ -110,7 +120,7 @@ impl<T: ControlPlaneTransport> RuntimeWorker<T> {
                     }
                 };
 
-                match self.transport.post_events(&payload) {
+                match self.transport.post_events(&batch_id, &payload) {
                     Ok(()) => {
                         if let Err(error) = self.spool.ack_segment(&segment) {
                             report.errors.push(format!(
@@ -153,7 +163,7 @@ mod tests {
 
     struct FakeTransport {
         uploads_fail: bool,
-        uploaded: Mutex<Vec<Vec<u8>>>,
+        uploaded: Mutex<Vec<(String, Vec<u8>)>>,
     }
 
     impl ControlPlaneTransport for FakeTransport {
@@ -173,12 +183,16 @@ mod tests {
 
         fn post_events(
             &self,
+            batch_id: &str,
             jsonl: &[u8],
         ) -> Result<(), TransportError> {
             if self.uploads_fail {
                 return Err(TransportError::Credential);
             }
-            self.uploaded.lock().unwrap().push(jsonl.to_vec());
+            self.uploaded
+                .lock()
+                .unwrap()
+                .push((batch_id.to_string(), jsonl.to_vec()));
             Ok(())
         }
     }
@@ -220,6 +234,20 @@ mod tests {
         assert_eq!(report.segments_uploaded, 1);
         assert_eq!(report.spool.unwrap().segments, 0);
         assert!(report.errors.is_empty());
+    }
+
+    #[test]
+    fn retry_uses_same_stable_batch_id() {
+        let (_dir, mut worker) = worker(false);
+        worker.enqueue(&serde_json::json!({"event":"one"})).unwrap();
+
+        let report = worker.run_once(&AgentHealth::new("test", None));
+        assert_eq!(report.segments_uploaded, 1);
+
+        let uploads = worker.transport.uploaded.lock().unwrap();
+        assert_eq!(uploads.len(), 1);
+        assert!(!uploads[0].0.is_empty());
+        assert!(uploads[0].0.bytes().all(|byte| byte.is_ascii_digit()));
     }
 
     #[test]
