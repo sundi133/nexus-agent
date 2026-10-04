@@ -44,3 +44,29 @@ File-write authorization is deliberately deferred to the enforcement milestone b
 4. Add narrow filesystem authorization only after workload/false-positive tests.
 5. Package the collector as an Endpoint Security system extension.
 6. Add Network Extension filtering and MDM deployment profiles.
+
+
+## Milestone 3 development harness: AUTH_EXEC enforcement
+
+Build all development binaries with:
+
+```sh
+make
+```
+
+Start in audit mode:
+
+```sh
+sudo ./build/nexus-es-auth-enforce policy.example.conf
+```
+
+The enforcement harness currently supports only exact executable-path deny rules. It loads policy before subscribing to Endpoint Security and performs no disk/network/model access inside the authorization callback.
+
+Emergency behavior:
+
+```sh
+sudo kill -USR1 <pid>   # kill switch ON: force allow
+sudo kill -USR2 <pid>   # kill switch OFF: resume configured mode
+```
+
+This local policy format is development-only and is **not authenticated**. Do not use it as the production policy channel. Signed policy bundles and secure enrollment remain part of M4.
