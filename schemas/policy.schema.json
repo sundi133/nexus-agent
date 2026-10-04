@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/endpoint-policy-v1.json",
+  "title": "Votal Endpoint Policy Bundle",
+  "type": "object",
+  "required": ["version", "mode", "rules"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1},
+    "mode": {"type": "string", "enum": ["audit", "enforce"]},
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "category", "action"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "category": {"type": "string", "minLength": 1},
+          "action": {"type": "string", "enum": ["allow", "deny", "alert"]},
+          "executable_paths": {"type": "array", "items": {"type": "string"}},
+          "destination_hosts": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
