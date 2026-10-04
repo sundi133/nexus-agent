@@ -388,6 +388,7 @@ mod tests {
                 executable_paths: vec!["/tmp/deny-me".into()],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         let signing_key = SigningKey::from_bytes(&[3u8; 32]);
@@ -431,6 +432,7 @@ mod tests {
                 executable_paths: vec!["/tmp/demo".into()],
                 destination_hosts: vec![],
             }],
+            agent_action_rules: vec![],
             ransomware_response: None,
         };
         let signing_key = SigningKey::from_bytes(&[4u8; 32]);
