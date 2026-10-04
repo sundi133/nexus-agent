@@ -126,7 +126,44 @@ pub fn verify_signed_policy(
         .verify(&payload, &signature)
         .map_err(|_| PolicyVerificationError::InvalidSignature)?;
 
-    serde_json::from_slice(&payload).map_err(|_| PolicyVerificationError::InvalidPolicy)
+    let policy: PolicyBundle =
+        serde_json::from_slice(&payload).map_err(|_| PolicyVerificationError::InvalidPolicy)?;
+    validate_policy(&policy)?;
+    Ok(policy)
+}
+
+pub fn validate_policy(policy: &PolicyBundle) -> Result<(), PolicyVerificationError> {
+    use std::collections::HashSet;
+
+    if policy.version == 0 || policy.rules.len() > 1024 {
+        return Err(PolicyVerificationError::InvalidPolicy);
+    }
+
+    let mut ids = HashSet::with_capacity(policy.rules.len());
+
+    for rule in &policy.rules {
+        if rule.id.is_empty()
+            || rule.id.len() > 128
+            || rule.category.is_empty()
+            || rule.category.len() > 128
+            || !ids.insert(rule.id.as_str())
+            || (rule.executable_paths.is_empty() && rule.destination_hosts.is_empty())
+            || rule.executable_paths.len() > 64
+            || rule.destination_hosts.len() > 64
+            || rule
+                .executable_paths
+                .iter()
+                .any(|value| value.is_empty() || value.len() > 4096)
+            || rule
+                .destination_hosts
+                .iter()
+                .any(|value| value.is_empty() || value.len() > 253)
+        {
+            return Err(PolicyVerificationError::InvalidPolicy);
+        }
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -475,6 +512,35 @@ mod tests {
                 destination_hosts: vec![],
             }],
         }
+    }
+
+    #[test]
+    fn policy_validation_rejects_duplicate_rule_ids() {
+        let mut policy = bundle(EnforcementMode::Audit);
+        policy.rules.push(policy.rules[0].clone());
+        assert_eq!(
+            validate_policy(&policy),
+            Err(PolicyVerificationError::InvalidPolicy)
+        );
+    }
+
+    #[test]
+    fn policy_validation_rejects_empty_selector_rule() {
+        let policy = PolicyBundle {
+            version: 1,
+            mode: EnforcementMode::Audit,
+            rules: vec![PolicyRule {
+                id: "empty".into(),
+                category: "test".into(),
+                action: DecisionAction::Alert,
+                executable_paths: vec![],
+                destination_hosts: vec![],
+            }],
+        };
+        assert_eq!(
+            validate_policy(&policy),
+            Err(PolicyVerificationError::InvalidPolicy)
+        );
     }
 
     #[test]
