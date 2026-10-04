@@ -1,0 +1,47 @@
+name: NexusAgent
+
+options:
+  bundleIdPrefix: ai.votal.nexus
+  deploymentTarget:
+    macOS: "13.0"
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  NexusAgent:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp/Sources
+    info:
+      path: HostApp/Info.plist
+    entitlements:
+      path: HostApp/NexusAgent.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent
+        PRODUCT_NAME: Nexus Agent
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - target: NexusEndpointExtension
+      - sdk: SystemExtensions.framework
+
+  NexusEndpointExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: SystemExtension/Sources
+    info:
+      path: SystemExtension/Info.plist
+    entitlements:
+      path: SystemExtension/NexusEndpointExtension.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent.endpoint
+        PRODUCT_NAME: NexusEndpointExtension
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - sdk: libEndpointSecurity.tbd
