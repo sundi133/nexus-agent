@@ -2,7 +2,9 @@
 param([switch]$PurgeData)
 
 $ErrorActionPreference = "Stop"
-$serviceName = "VotalNexusAgent"
+
+$agentServiceName = "VotalNexusAgent"
+$runtimeServiceName = "VotalNexusRuntime"
 $installDirectory = Join-Path $env:ProgramFiles "Votal\Nexus"
 $stateDirectory = Join-Path $env:ProgramData "Votal\Nexus"
 
@@ -14,22 +16,34 @@ function Assert-Administrator {
     }
 }
 
-Assert-Administrator
-$service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-if ($null -ne $service) {
+function Remove-ServiceIfPresent([string]$Name) {
+    $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
+    if ($null -eq $service) {
+        return
+    }
     if ($service.Status -ne "Stopped") {
-        Stop-Service -Name $serviceName -Force
+        Stop-Service -Name $Name -Force
         $service.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
     }
-    & sc.exe delete $serviceName | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Failed to delete $serviceName." }
+    & sc.exe delete $Name | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to delete $Name." }
 }
 
-if (Test-Path -LiteralPath $installDirectory) { Remove-Item -LiteralPath $installDirectory -Recurse -Force }
+Assert-Administrator
+
+# Stop runtime first so it cannot race with collector/state removal.
+Remove-ServiceIfPresent $runtimeServiceName
+Remove-ServiceIfPresent $agentServiceName
+
+if (Test-Path -LiteralPath $installDirectory) {
+    Remove-Item -LiteralPath $installDirectory -Recurse -Force
+}
+
 if ($PurgeData -and (Test-Path -LiteralPath $stateDirectory)) {
     Remove-Item -LiteralPath $stateDirectory -Recurse -Force
-    Write-Host "Removed Nexus state and policy data."
+    Write-Host "Removed Nexus mutable state, policy, spool, and credentials."
 } else {
     Write-Host "Preserved Nexus state at $stateDirectory."
 }
-Write-Host "Uninstalled $serviceName."
+
+Write-Host "Uninstalled $agentServiceName and $runtimeServiceName when present."
