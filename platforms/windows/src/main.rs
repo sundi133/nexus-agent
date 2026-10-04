@@ -644,47 +644,57 @@ mod service {
 
     fn select_network_enforcement(
         policy: &PolicyBundle,
-    ) -> std::result::Result<Option<NetworkEnforcementPlan>, String> {
+    ) -> std::result::Result<Vec<NetworkEnforcementPlan>, String> {
         if policy.mode != EnforcementMode::Enforce {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
-        let mut network_rules = policy
-            .rules
-            .iter()
-            .filter(|rule| {
-                rule.action == DecisionAction::Deny && !rule.destination_hosts.is_empty()
-            });
+        let mut plans = Vec::new();
 
-        let Some(rule) = network_rules.next() else {
-            return Ok(None);
-        };
+        for rule in policy.rules.iter().filter(|rule| {
+            rule.action == DecisionAction::Deny && !rule.destination_hosts.is_empty()
+        }) {
+            let destinations = rule
+                .destination_hosts
+                .iter()
+                .map(|value| {
+                    value.parse::<Ipv4Addr>().map_err(|_| {
+                        format!(
+                            "network deny rule {} contains unsupported non-IPv4 destination {}",
+                            rule.id, value
+                        )
+                    })
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
 
-        if network_rules.next().is_some() {
-            return Err(
-                "multiple deny network rules are not yet representable by the Windows WFP adapter"
-                    .to_string(),
-            );
+            if rule.executable_paths.is_empty() {
+                for remote in destinations {
+                    plans.push(NetworkEnforcementPlan {
+                        rule_id: rule.id.clone(),
+                        remote_ipv4: remote.to_string(),
+                        application_path: None,
+                    });
+                }
+            } else {
+                for remote in destinations {
+                    for executable in &rule.executable_paths {
+                        plans.push(NetworkEnforcementPlan {
+                            rule_id: rule.id.clone(),
+                            remote_ipv4: remote.to_string(),
+                            application_path: Some(executable.clone()),
+                        });
+                    }
+                }
+            }
+
+            if plans.len() > 256 {
+                return Err(
+                    "expanded Windows WFP policy exceeds 256 exact filters".to_string(),
+                );
+            }
         }
 
-        if rule.destination_hosts.len() != 1 || rule.executable_paths.len() > 1 {
-            return Err(
-                "network deny rule requires exactly one destination and at most one executable"
-                    .to_string(),
-            );
-        }
-
-        let remote = rule.destination_hosts[0]
-            .parse::<Ipv4Addr>()
-            .map_err(|_| {
-                "network deny destination must currently be an exact IPv4 address".to_string()
-            })?;
-
-        Ok(Some(NetworkEnforcementPlan {
-            rule_id: rule.id.clone(),
-            remote_ipv4: remote.to_string(),
-            application_path: rule.executable_paths.first().cloned(),
-        }))
+        Ok(plans)
     }
 
     fn configure_network_enforcement(
@@ -699,18 +709,18 @@ mod service {
         };
 
         match select_network_enforcement(policy) {
-            Ok(None) => (
+            Ok(plans) if plans.is_empty() => (
                 None,
                 CapabilityState::Shadow,
                 if policy.mode == EnforcementMode::Audit {
-                    "policy is audit mode; WFP runtime filter intentionally not installed"
+                    "policy is audit mode; WFP runtime filters intentionally not installed"
                         .to_string()
                 } else {
-                    "no supported exact-IPv4 deny network rule configured".to_string()
+                    "no supported exact-IPv4 deny network rules configured".to_string()
                 },
             ),
             Err(detail) => (None, CapabilityState::Shadow, detail),
-            Ok(Some(plan)) => {
+            Ok(plans) => {
                 let mut session = match WfpSession::open() {
                     Ok(session) => session,
                     Err(error) => {
@@ -722,26 +732,33 @@ mod service {
                     }
                 };
 
-                match session.install_exact_ipv4(
-                    &plan.remote_ipv4,
-                    plan.application_path.as_deref(),
-                ) {
-                    Ok(()) => (
-                        Some(session),
-                        CapabilityState::Active,
-                        format!(
-                            "dynamic WFP block active for rule={} remote_ipv4={} app_scope={}; stopping the service removes the filter",
-                            plan.rule_id,
-                            plan.remote_ipv4,
-                            plan.application_path.as_deref().unwrap_or("all")
-                        ),
-                    ),
-                    Err(error) => (
-                        None,
-                        CapabilityState::Unavailable,
-                        format!("WFP rule installation failed: 0x{error:08x}"),
-                    ),
+                for plan in &plans {
+                    if let Err(error) = session.install_exact_ipv4(
+                        &plan.remote_ipv4,
+                        plan.application_path.as_deref(),
+                    ) {
+                        let _ = session.clear();
+                        return (
+                            None,
+                            CapabilityState::Unavailable,
+                            format!(
+                                "WFP rule installation failed for rule={} remote_ipv4={} app_scope={}: 0x{error:08x}",
+                                plan.rule_id,
+                                plan.remote_ipv4,
+                                plan.application_path.as_deref().unwrap_or("all")
+                            ),
+                        );
+                    }
                 }
+
+                (
+                    Some(session),
+                    CapabilityState::Active,
+                    format!(
+                        "dynamic WFP enforcement active with {} exact filters from signed policy; stopping the service removes all filters",
+                        plans.len()
+                    ),
+                )
             }
         }
     }
@@ -864,29 +881,52 @@ mod service {
 
         #[test]
         fn audit_policy_never_builds_wfp_plan() {
-            assert_eq!(
+            assert!(
                 select_network_enforcement(&rule_policy(
                     EnforcementMode::Audit,
                     vec!["203.0.113.10"],
                     vec![],
                 ))
-                .unwrap(),
-                None
+                .unwrap()
+                .is_empty()
             );
         }
 
         #[test]
         fn exact_ipv4_rule_builds_plan() {
-            let plan = select_network_enforcement(&rule_policy(
+            let plans = select_network_enforcement(&rule_policy(
                 EnforcementMode::Enforce,
                 vec!["203.0.113.10"],
                 vec![r"C:\Test\client.exe"],
             ))
-            .unwrap()
             .unwrap();
 
-            assert_eq!(plan.remote_ipv4, "203.0.113.10");
-            assert_eq!(plan.application_path.as_deref(), Some(r"C:\Test\client.exe"));
+            assert_eq!(plans.len(), 1);
+            assert_eq!(plans[0].remote_ipv4, "203.0.113.10");
+            assert_eq!(
+                plans[0].application_path.as_deref(),
+                Some(r"C:\Test\client.exe")
+            );
+        }
+
+        #[test]
+        fn multiple_destinations_and_apps_expand_to_cartesian_filters() {
+            let plans = select_network_enforcement(&rule_policy(
+                EnforcementMode::Enforce,
+                vec!["203.0.113.10", "203.0.113.11"],
+                vec![r"C:\Test\a.exe", r"C:\Test\b.exe"],
+            ))
+            .unwrap();
+
+            assert_eq!(plans.len(), 4);
+            assert!(plans.iter().any(|plan|
+                plan.remote_ipv4 == "203.0.113.10"
+                    && plan.application_path.as_deref() == Some(r"C:\Test\a.exe")
+            ));
+            assert!(plans.iter().any(|plan|
+                plan.remote_ipv4 == "203.0.113.11"
+                    && plan.application_path.as_deref() == Some(r"C:\Test\b.exe")
+            ));
         }
 
         #[test]
