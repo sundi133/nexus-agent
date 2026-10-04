@@ -3,7 +3,7 @@
   "$id": "https://votal.ai/schemas/endpoint-runtime-config-v1.json",
   "title": "Votal Nexus Agent Runtime Configuration",
   "type": "object",
-  "required": ["control_plane", "spool_dir", "policy_signed_path", "policy_watermark_path"],
+  "required": ["control_plane", "spool_dir", "policy_signed_path", "policy_watermark_path", "policy_public_key_file", "event_source_path", "event_offset_path", "health_source_path"],
   "properties": {
     "control_plane": {
       "type": "object",
@@ -21,6 +21,11 @@
     "spool_dir": {"type": "string", "minLength": 1},
     "policy_signed_path": {"type": "string", "minLength": 1},
     "policy_watermark_path": {"type": "string", "minLength": 1},
+    "policy_public_key_file": {"type": "string", "minLength": 1},
+    "event_source_path": {"type": "string", "minLength": 1},
+    "event_offset_path": {"type": "string", "minLength": 1},
+    "health_source_path": {"type": "string", "minLength": 1},
+    "cycle_interval_ms": {"type": "integer", "minimum": 1},
     "spool_max_bytes": {"type": "integer", "minimum": 1},
     "segment_max_bytes": {"type": "integer", "minimum": 1}
   },
