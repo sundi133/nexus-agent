@@ -4,11 +4,12 @@
 #include <stdint.h>
 
 /*
- * Replace this development placeholder with the 32-byte Ed25519 public key
- * used to sign production policy bundles. The extension refuses to enforce
- * policy while this trust root is all zeros.
+ * Optional compile-time fallback trust root. Production deployment normally
+ * provisions the base64 public key as a root-owned file through the installer.
+ * This fallback may remain all-zero; if both sources are unavailable or invalid,
+ * the extension remains fail-open.
  *
- * Do not embed the private signing key anywhere in the endpoint agent.
+ * Never embed the private signing key anywhere in the endpoint agent.
  */
 static const uint8_t NEXUS_POLICY_PUBLIC_KEY[32] = {
     0, 0, 0, 0, 0, 0, 0, 0,
