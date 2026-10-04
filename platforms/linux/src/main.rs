@@ -1,0 +1,200 @@
+#[cfg(not(target_os = "linux"))]
+fn main() {
+    eprintln!("nexus-agent-linux is only supported on Linux");
+}
+
+#[cfg(target_os = "linux")]
+mod linux_agent {
+    use nexus_agent_core::{EventKind, SecurityEvent};
+    use std::{
+        ffi::CString,
+        fs::{read_link, OpenOptions},
+        io::{self, Write},
+        mem::{size_of, zeroed},
+        os::fd::RawFd,
+        path::PathBuf,
+        slice,
+        time::Duration,
+    };
+    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+
+    const EVENT_LOG_PATH: &str = "/var/lib/votal/nexus/events.jsonl";
+    const BUFFER_SIZE: usize = 64 * 1024;
+
+    pub fn run() -> io::Result<()> {
+        let fan_fd = fanotify_start("/")?;
+        eprintln!("nexus-agent-linux: fanotify audit collector active on /");
+
+        let mut buffer = vec![0u8; BUFFER_SIZE];
+
+        loop {
+            let read_count = unsafe {
+                libc::read(
+                    fan_fd,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                )
+            };
+
+            if read_count < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    std::thread::sleep(Duration::from_millis(50));
+                    continue;
+                }
+                unsafe { libc::close(fan_fd) };
+                return Err(error);
+            }
+
+            if read_count == 0 {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+
+            parse_events(&buffer[..read_count as usize])?;
+        }
+    }
+
+    fn fanotify_start(path: &str) -> io::Result<RawFd> {
+        let fan_fd = unsafe {
+            libc::fanotify_init(
+                libc::FAN_CLASS_NOTIF | libc::FAN_CLOEXEC | libc::FAN_NONBLOCK,
+                libc::O_RDONLY | libc::O_LARGEFILE | libc::O_CLOEXEC,
+            )
+        };
+        if fan_fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let path = CString::new(path)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid fanotify path"))?;
+
+        let mask =
+            libc::FAN_OPEN_EXEC | libc::FAN_CLOSE_WRITE | libc::FAN_EVENT_ON_CHILD;
+
+        let result = unsafe {
+            libc::fanotify_mark(
+                fan_fd,
+                libc::FAN_MARK_ADD | libc::FAN_MARK_MOUNT,
+                mask,
+                libc::AT_FDCWD,
+                path.as_ptr(),
+            )
+        };
+
+        if result < 0 {
+            let error = io::Error::last_os_error();
+            unsafe { libc::close(fan_fd) };
+            return Err(error);
+        }
+
+        Ok(fan_fd)
+    }
+
+    fn parse_events(buffer: &[u8]) -> io::Result<()> {
+        let mut offset = 0usize;
+
+        while offset + size_of::<libc::fanotify_event_metadata>() <= buffer.len() {
+            let metadata = unsafe {
+                &*(buffer.as_ptr().add(offset) as *const libc::fanotify_event_metadata)
+            };
+
+            if metadata.event_len == 0 {
+                break;
+            }
+
+            if metadata.vers != libc::FANOTIFY_METADATA_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "fanotify metadata version mismatch",
+                ));
+            }
+
+            if metadata.fd >= 0 {
+                let target_path = fd_path(metadata.fd);
+                let kind = if metadata.mask & libc::FAN_OPEN_EXEC != 0 {
+                    Some(EventKind::ProcessExec)
+                } else if metadata.mask & libc::FAN_CLOSE_WRITE != 0 {
+                    Some(EventKind::FileWrite)
+                } else {
+                    None
+                };
+
+                if let Some(kind) = kind {
+                    let _ = emit_event(metadata.pid as u32, kind, target_path);
+                }
+
+                unsafe { libc::close(metadata.fd) };
+            }
+
+            let event_len = metadata.event_len as usize;
+            if event_len > buffer.len().saturating_sub(offset) {
+                break;
+            }
+            offset += event_len;
+        }
+
+        Ok(())
+    }
+
+    fn fd_path(fd: RawFd) -> Option<String> {
+        let link = PathBuf::from(format!("/proc/self/fd/{fd}"));
+        read_link(link)
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+
+    fn emit_event(pid: u32, kind: EventKind, path: Option<String>) -> io::Result<()> {
+        let now = OffsetDateTime::now_utc();
+        let timestamp = now
+            .format(&Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+
+        let device_id = std::fs::read_to_string("/etc/machine-id")
+            .map(|value| value.trim().to_string())
+            .unwrap_or_else(|_| "linux-device".to_string());
+
+        let (executable_path, target_path) = match kind {
+            EventKind::ProcessExec => (path, None),
+            _ => (None, path),
+        };
+
+        let event = SecurityEvent {
+            event_id: format!("linux-{}-{}", pid, now.unix_timestamp_nanos()),
+            timestamp,
+            device_id,
+            kind,
+            pid: Some(pid),
+            parent_pid: None,
+            executable_path,
+            target_path,
+            destination_host: None,
+        };
+
+        let log_path = std::path::Path::new(EVENT_LOG_PATH);
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)?;
+        serde_json::to_writer(&mut file, &event)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn fanotify_metadata_layout_is_nonzero() {
+            assert!(std::mem::size_of::<libc::fanotify_event_metadata>() > 0);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn main() -> std::io::Result<()> {
+    linux_agent::run()
+}
