@@ -378,9 +378,7 @@ mod service {
         let (candidate_session, candidate_state, candidate_detail) =
             configure_network_enforcement(Some(&candidate));
 
-        if candidate_state == CapabilityState::Unavailable
-            && network_session.is_some()
-        {
+        if candidate_state == CapabilityState::Unavailable {
             *network_detail = format!(
                 "last-known-good WFP enforcement retained; candidate policy version={} not activated: {}",
                 candidate_version,
@@ -847,7 +845,7 @@ mod service {
                     "no supported exact-IPv4 deny network rules configured".to_string()
                 },
             ),
-            Err(detail) => (None, CapabilityState::Shadow, detail),
+            Err(detail) => (None, CapabilityState::Unavailable, detail),
             Ok(plans) => {
                 let mut session = match WfpSession::open() {
                     Ok(session) => session,
