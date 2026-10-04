@@ -1,6 +1,7 @@
 use crate::{
-    verify_signed_policy, DecisionAction, DetectionConfig, EventKind, PolicyBundle,
-    RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
+    plan_ransomware_response, verify_signed_policy, DecisionAction, DetectionConfig, EventKind,
+    PolicyBundle, RansomwareResponseAction, RansomwareTracker, SecurityEvent,
+    SignedPolicyEnvelope,
 };
 use std::{slice, str, sync::Mutex};
 
@@ -28,6 +29,17 @@ pub struct NexusRansomwareAssessment {
 #[repr(C)]
 pub struct NexusRansomwareTrackerHandle {
     tracker: Mutex<RansomwareTracker>,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct NexusRansomwareResponse {
+    pub matched: bool,
+    pub would_enforce: bool,
+    pub enforce: bool,
+    /// 0=alert, 1=terminate_process, 2=network_isolate,
+    /// 3=terminate_and_network_isolate, 255=none/error.
+    pub action: u8,
 }
 
 
@@ -187,6 +199,83 @@ pub extern "C" fn nexus_ransomware_observe_path(
     NexusRansomwareAssessment {
         score: assessment.score,
         severity,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn nexus_ransomware_mark_suspicious_process(
+    handle: *mut NexusRansomwareTrackerHandle,
+    pid: u32,
+    now_ms: u64,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let handle = unsafe { &*handle };
+    let Ok(mut tracker) = handle.tracker.lock() else {
+        return false;
+    };
+    tracker.mark_suspicious_process(pid, now_ms);
+    true
+}
+
+#[no_mangle]
+pub extern "C" fn nexus_ransomware_plan_response(
+    policy_handle: *const NexusPolicyHandle,
+    tracker_handle: *mut NexusRansomwareTrackerHandle,
+    pid: u32,
+    score: u8,
+    severity: u8,
+) -> NexusRansomwareResponse {
+    let none = NexusRansomwareResponse {
+        matched: false,
+        would_enforce: false,
+        enforce: false,
+        action: 255,
+    };
+
+    if policy_handle.is_null() || tracker_handle.is_null() || severity == 255 {
+        return none;
+    }
+
+    let tracker_handle = unsafe { &*tracker_handle };
+    let Ok(tracker) = tracker_handle.tracker.lock() else {
+        return none;
+    };
+    let Some(features) = tracker.features_for(pid) else {
+        return none;
+    };
+
+    let assessment = crate::RansomwareAssessment {
+        score,
+        severity: match severity {
+            0 => "low",
+            1 => "medium",
+            2 => "high",
+            3 => "critical",
+            _ => return none,
+        }
+        .to_string(),
+        reasons: Vec::new(),
+    };
+
+    let policy = unsafe { &(*policy_handle).policy };
+    let Some(decision) = plan_ransomware_response(policy, pid, &features, &assessment) else {
+        return none;
+    };
+
+    let action = match decision.action {
+        RansomwareResponseAction::Alert => 0,
+        RansomwareResponseAction::TerminateProcess => 1,
+        RansomwareResponseAction::NetworkIsolate => 2,
+        RansomwareResponseAction::TerminateAndNetworkIsolate => 3,
+    };
+
+    NexusRansomwareResponse {
+        matched: decision.matched,
+        would_enforce: decision.would_enforce,
+        enforce: decision.enforce,
+        action,
     }
 }
 
