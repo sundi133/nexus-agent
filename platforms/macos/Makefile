@@ -30,6 +30,7 @@ package-syntax:
 	xcrun swiftc -typecheck -swift-version 5 Package/FilterData/Sources/*.swift -framework NetworkExtension
 	xcrun --sdk macosx clang $(CFLAGS) -I../../core/include -fsyntax-only Package/SystemExtension/Sources/main.c
 	plutil -lint Package/HostApp/Info.plist Package/HostApp/NexusAgent.entitlements Package/SystemExtension/Info.plist Package/SystemExtension/NexusEndpointExtension.entitlements Package/FilterData/Info.plist Package/FilterData/NexusFilterData.entitlements
+	plutil -lint Deployment/SystemExtensions.mobileconfig.template Deployment/PPPC-FullDiskAccess.mobileconfig.template Deployment/WebContentFilter.mobileconfig.template
 	ruby -e 'require "yaml"; YAML.load_file("Package/project.yml"); puts "project.yml OK"'
 
 $(ENFORCE_TARGET): $(ENFORCE_SOURCES)
