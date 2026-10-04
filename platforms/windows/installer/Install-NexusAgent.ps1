@@ -35,7 +35,7 @@ if ($null -ne $existing -and $existing.Status -ne "Stopped") {
 
 New-Item -ItemType Directory -Force -Path $installDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $stateDirectory | Out-Null
-& icacls.exe $stateDirectory /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" | Out-Null
+& icacls.exe $stateDirectory /inheritance:r /grant:r "*S-1-5-18:(OI)(CI)F" "*S-1-5-32-544:(OI)(CI)F" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Failed to harden ACLs on $stateDirectory" }
 Copy-Item -LiteralPath $sourceBinary -Destination $installedBinary -Force
 
