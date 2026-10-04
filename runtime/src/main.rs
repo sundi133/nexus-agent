@@ -6,6 +6,8 @@ use nexus_agent_runtime::{
 };
 #[cfg(unix)]
 use nexus_agent_runtime::spawn_local_ingest_unix;
+#[cfg(windows)]
+use nexus_agent_runtime::spawn_local_ingest_windows_pipe;
 use std::{
     env, fs, io,
     path::Path,
@@ -148,10 +150,11 @@ fn run_runtime_loop(
     let (local_ingest_enabled, local_ingest_identity_mode) = match (
         config.local_ingest_port,
         config.local_ingest_socket_path.as_deref(),
+        config.local_ingest_pipe_name.as_deref(),
         config.local_ingest_token_file.as_deref(),
         config.local_ingest_producers.as_slice(),
     ) {
-        (Some(port), None, Some(token_path), []) => {
+        (Some(port), None, None, Some(token_path), []) => {
             let token = load_local_ingest_token(token_path)?;
             spawn_local_ingest(
                 port,
@@ -162,7 +165,7 @@ fn run_runtime_loop(
             .map_err(|error| format!("cannot start local agent-action ingest: {error}"))?;
             (true, "legacy_shared_token_tcp")
         }
-        (Some(port), None, None, producers) if !producers.is_empty() => {
+        (Some(port), None, None, None, producers) if !producers.is_empty() => {
             let credentials = load_bound_producers(producers)?;
             spawn_local_ingest(
                 port,
@@ -174,7 +177,7 @@ fn run_runtime_loop(
             (true, "credential_bound_tcp")
         }
         #[cfg(unix)]
-        (None, Some(socket_path), None, producers) if !producers.is_empty() => {
+        (None, Some(socket_path), None, None, producers) if !producers.is_empty() => {
             let credentials = load_bound_producers(producers)?;
             spawn_local_ingest_unix(
                 socket_path.to_path_buf(),
@@ -185,7 +188,19 @@ fn run_runtime_loop(
             .map_err(|error| format!("cannot start attested Unix agent-action ingest: {error}"))?;
             (true, "kernel_peer_attested_unix")
         }
-        (None, None, None, []) => (false, "disabled"),
+        #[cfg(windows)]
+        (None, None, Some(pipe_name), None, producers) if !producers.is_empty() => {
+            let credentials = load_bound_producers(producers)?;
+            spawn_local_ingest_windows_pipe(
+                pipe_name.to_string(),
+                LocalIngestAuth::BoundProducers(credentials),
+                active_policy.clone(),
+                action_tx,
+            )
+            .map_err(|error| format!("cannot start attested Windows named-pipe ingest: {error}"))?;
+            (true, "kernel_client_pid_attested_named_pipe")
+        }
+        (None, None, None, None, []) => (false, "disabled"),
         _ => return Err("local ingest configuration is incomplete or unsupported on this platform".to_string()),
     };
 
