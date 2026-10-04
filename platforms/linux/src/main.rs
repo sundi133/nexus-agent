@@ -82,10 +82,19 @@ mod linux_agent {
                             policy = Some(candidate);
                         }
                         Err(detail) => {
-                            network_lease.take();
-                            network_state = CapabilityState::Shadow;
-                            network_detail = detail;
-                            policy = Some(candidate);
+                            network_detail = format!(
+                                "last-known-good policy/enforcement retained; candidate policy version={} not activated: {}",
+                                candidate_version,
+                                detail,
+                            );
+                            let _ = write_health(&build_health(
+                                policy.as_ref(),
+                                network_state,
+                                &network_detail,
+                            ));
+                            eprintln!("nexus-agent-linux: {}", network_detail);
+                            last_policy_check = Instant::now();
+                            continue;
                         }
                         Ok(plans) => {
                             let apply_result = if let Some(lease) = network_lease.as_mut() {
