@@ -13,7 +13,7 @@ fn synthetic_mass_change_reaches_high_severity() {
             4242,
             i,
             &format!("/tmp/file-{i}"),
-            i < 50,
+            i <= 50,
         );
     }
 
