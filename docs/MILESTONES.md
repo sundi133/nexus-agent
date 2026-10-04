@@ -46,7 +46,7 @@ Planned.
 - Network Extension content filtering
 
 ## M5 — Windows
-Planned after macOS enforcement semantics stabilize.
+Status: service/process-telemetry baseline and signed-policy shadow classification implemented; ETW and native enforcement remain.
 
 - Windows service
 - ETW telemetry
@@ -55,7 +55,7 @@ Planned after macOS enforcement semantics stabilize.
 - signed installer/driver pipeline
 
 ## M6 — Linux
-Planned after shared enforcement semantics stabilize.
+Status: fanotify audit collector and signed-policy shadow classification implemented; permission-event shadow/enforcement and eBPF remain.
 
 - Rust daemon
 - eBPF telemetry with explicit kernel support matrix
