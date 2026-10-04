@@ -1,5 +1,5 @@
 CC ?= clang
-CFLAGS ?= -Wall -Wextra -Werror -O2
+CFLAGS ?= -Wall -Wextra -Werror -O2 -fblocks
 FRAMEWORKS = -framework EndpointSecurity
 TARGET = build/nexus-es-collector
 SHADOW_TARGET = build/nexus-es-auth-shadow
@@ -8,9 +8,14 @@ SOURCES = Sources/nexus_es_collector.c
 SHADOW_SOURCES = Sources/nexus_es_auth_shadow.c
 ENFORCE_SOURCES = Sources/nexus_es_auth_enforce.c
 
-.PHONY: all clean
+.PHONY: all syntax clean
 
 all: $(TARGET) $(SHADOW_TARGET) $(ENFORCE_TARGET)
+
+syntax:
+	xcrun --sdk macosx clang $(CFLAGS) -fsyntax-only $(SOURCES)
+	xcrun --sdk macosx clang $(CFLAGS) -fsyntax-only $(SHADOW_SOURCES)
+	xcrun --sdk macosx clang $(CFLAGS) -fsyntax-only $(ENFORCE_SOURCES)
 
 $(TARGET): $(SOURCES)
 	mkdir -p build
