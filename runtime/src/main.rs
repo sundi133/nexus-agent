@@ -256,6 +256,36 @@ fn run_runtime_loop(
             },
         );
 
+        let (attestation_state, attestation_detail) =
+            match local_ingest_identity_mode {
+                "kernel_peer_attested_unix" => (
+                    CapabilityState::Active,
+                    "Unix-domain socket peer credentials are enforced; Linux also binds PID/executable when available".to_string(),
+                ),
+                "kernel_client_pid_attested_named_pipe" => (
+                    CapabilityState::Active,
+                    "Windows named-pipe client PID and executable identity are kernel-derived".to_string(),
+                ),
+                "credential_bound_tcp" => (
+                    CapabilityState::Shadow,
+                    "producer token is bound to agent_id, but loopback TCP does not attest the local process".to_string(),
+                ),
+                "legacy_shared_token_tcp" => (
+                    CapabilityState::Unavailable,
+                    "legacy shared token authenticates bridge access only; no trusted agent/process identity".to_string(),
+                ),
+                _ => (
+                    CapabilityState::Unavailable,
+                    "local producer attestation is not configured".to_string(),
+                ),
+            };
+
+        health = health.with_capability(
+            "agent_action_peer_attestation",
+            attestation_state,
+            attestation_detail,
+        );
+
         if let Ok(stats) = worker.spool().stats() {
             health = health.with_capability(
                 "managed_runtime_spool",
