@@ -143,13 +143,69 @@ static bool write_policy_watermark(uint64_t version) {
 }
 
 static void write_health_file(void) {
+    NexusRansomwareResponseConfig response_config = {
+        .configured = false,
+        .mode = 255,
+        .action = 255,
+        .min_score = 0,
+        .require_suspicious_process_context = false
+    };
+
     pthread_rwlock_rdlock(&g_policy_lock);
     uint64_t policy_version =
         g_policy == NULL ? 0 : nexus_policy_version(g_policy);
+    if (g_policy != NULL) {
+        response_config = nexus_policy_ransomware_response_config(g_policy);
+    }
     pthread_rwlock_unlock(&g_policy_lock);
 
     bool kill_switch =
         atomic_load_explicit(&g_kill_switch, memory_order_relaxed);
+    bool local_disable = access(CONTAINMENT_DISABLE_PATH, F_OK) == 0;
+
+    const char *response_state = "unavailable";
+    char response_detail[256];
+    snprintf(response_detail,
+             sizeof(response_detail),
+             "no ransomware response configured");
+
+    if (response_config.configured) {
+        if (response_config.mode == 1) {
+            response_state = "shadow";
+            snprintf(response_detail,
+                     sizeof(response_detail),
+                     "shadow action=%u min_score=%u require_context=%s",
+                     response_config.action,
+                     response_config.min_score,
+                     response_config.require_suspicious_process_context
+                         ? "true" : "false");
+        } else if (response_config.mode == 2) {
+            if (kill_switch || local_disable) {
+                response_state = "shadow";
+                snprintf(response_detail,
+                         sizeof(response_detail),
+                         "enforce policy present but containment is locally disabled");
+            } else if (response_config.action == 1) {
+                response_state = "active";
+                snprintf(response_detail,
+                         sizeof(response_detail),
+                         "terminate-process containment active min_score=%u require_context=%s",
+                         response_config.min_score,
+                         response_config.require_suspicious_process_context
+                             ? "true" : "false");
+            } else {
+                response_state = "shadow";
+                snprintf(response_detail,
+                         sizeof(response_detail),
+                         "configured action=%u is not executable by macOS containment",
+                         response_config.action);
+            }
+        } else {
+            snprintf(response_detail,
+                     sizeof(response_detail),
+                     "ransomware response disabled by signed policy");
+        }
+    }
 
     FILE *file = fopen(HEALTH_PATH, "w");
     if (file == NULL) {
@@ -175,11 +231,14 @@ static void write_health_file(void) {
         "  \"capabilities\": [\n"
         "    {\"name\":\"endpoint_security\",\"state\":\"active\",\"detail\":\"Endpoint Security system extension subscribed\"},\n"
         "    {\"name\":\"process_enforcement\",\"state\":\"%s\",\"detail\":\"AUTH_EXEC local signed-policy enforcement\"},\n"
-        "    {\"name\":\"ransomware_detection\",\"state\":\"shadow\",\"detail\":\"unique-path file behavior correlation; detection only\"}\n"
+        "    {\"name\":\"ransomware_detection\",\"state\":\"shadow\",\"detail\":\"unique-path file behavior correlation\"},\n"
+        "    {\"name\":\"ransomware_response\",\"state\":\"%s\",\"detail\":\"%s\"}\n"
         "  ]\n"
         "}\n",
         kill_switch ? "true" : "false",
-        policy_version == 0 || kill_switch ? "shadow" : "active");
+        policy_version == 0 || kill_switch ? "shadow" : "active",
+        response_state,
+        response_detail);
     fclose(file);
 }
 
