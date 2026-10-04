@@ -185,3 +185,26 @@ The runtime creates `\\.\pipe\VotalNexusAgentActions`, obtains the connecting cl
 If the request supplies a PID that differs from the pipe-derived client PID, Nexus rejects the request before policy evaluation. Windows does not use the Unix `expected_uid` field; configuring it on a Windows producer causes the identity check to fail rather than silently ignoring it.
 
 Named-pipe client PID/executable attestation is stronger than loopback TCP, but Windows code-signing publisher/hash attestation is still a future hardening layer.
+
+
+## Executable SHA-256 pinning
+
+An attested producer can optionally pin one or more SHA-256 digests in addition to UID/path checks:
+
+```json
+{
+  "agent_id": "coding-agent",
+  "token_file": "/var/lib/votal/nexus/producers/coding-agent.token",
+  "expected_uid": 1000,
+  "executable_paths": ["/usr/local/bin/coding-agent"],
+  "executable_sha256": [
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  ]
+}
+```
+
+When `executable_sha256` is configured, at least one configured digest must match. Digests must be exactly 64 hexadecimal characters.
+
+On Linux, Nexus hashes `/proc/<peer-pid>/exe`, which follows the executable image of the running peer process rather than merely reopening the configured pathname. On Windows, Nexus hashes the executable resolved from the named-pipe client PID. On macOS, executable hashing is unavailable until peer PID/process identity is added, so a macOS producer configured with a hash pin will fail authentication instead of silently skipping the check.
+
+The verified digest is included in the producer-attestation audit record.
