@@ -176,6 +176,175 @@ cleanup:
     return result;
 }
 
+static const GUID NEXUS_DYNAMIC_SUBLAYER_KEY =
+    {0x2d3b89a2,0x19f9,0x43d5,{0x8e,0x25,0x0f,0x1d,0x9e,0xb1,0x55,0x68}};
+static const GUID NEXUS_DYNAMIC_FILTER_KEY =
+    {0x5ed76369,0xbcf0,0x4cbc,{0xa0,0x7f,0x63,0xe0,0x2d,0x3a,0x67,0x45}};
+
+typedef struct NEXUS_WFP_SESSION {
+    HANDLE engine;
+} NEXUS_WFP_SESSION;
+
+static DWORD ensure_dynamic_sublayer(HANDLE engine) {
+    FWPM_SUBLAYER0 sublayer;
+    ZeroMemory(&sublayer, sizeof(sublayer));
+
+    sublayer.subLayerKey = NEXUS_DYNAMIC_SUBLAYER_KEY;
+    sublayer.displayData.name = L"Votal Nexus Runtime";
+    sublayer.displayData.description =
+        L"Dynamic Votal Nexus service enforcement sublayer";
+    sublayer.weight = 0x101;
+
+    DWORD result = FwpmSubLayerAdd0(engine, &sublayer, NULL);
+    if (result == FWP_E_ALREADY_EXISTS) {
+        return ERROR_SUCCESS;
+    }
+    return result;
+}
+
+static DWORD dynamic_remove_filter(HANDLE engine) {
+    DWORD result = FwpmFilterDeleteByKey0(engine, &NEXUS_DYNAMIC_FILTER_KEY);
+    if (result == FWP_E_FILTER_NOT_FOUND) {
+        return ERROR_SUCCESS;
+    }
+    return result;
+}
+
+DWORD nexus_wfp_session_open(void **session_out) {
+    if (session_out == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    *session_out = NULL;
+
+    NEXUS_WFP_SESSION *session =
+        (NEXUS_WFP_SESSION *)HeapAlloc(
+            GetProcessHeap(),
+            HEAP_ZERO_MEMORY,
+            sizeof(NEXUS_WFP_SESSION));
+    if (session == NULL) {
+        return ERROR_OUTOFMEMORY;
+    }
+
+    FWPM_SESSION0 fwpm_session;
+    ZeroMemory(&fwpm_session, sizeof(fwpm_session));
+    fwpm_session.displayData.name = L"Votal Nexus Runtime Session";
+    fwpm_session.flags = FWPM_SESSION_FLAG_DYNAMIC;
+
+    DWORD result = FwpmEngineOpen0(
+        NULL,
+        RPC_C_AUTHN_WINNT,
+        NULL,
+        &fwpm_session,
+        &session->engine);
+    if (result != ERROR_SUCCESS) {
+        HeapFree(GetProcessHeap(), 0, session);
+        return result;
+    }
+
+    result = ensure_dynamic_sublayer(session->engine);
+    if (result != ERROR_SUCCESS) {
+        FwpmEngineClose0(session->engine);
+        HeapFree(GetProcessHeap(), 0, session);
+        return result;
+    }
+
+    *session_out = session;
+    return ERROR_SUCCESS;
+}
+
+DWORD nexus_wfp_session_clear(void *opaque_session) {
+    if (opaque_session == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+    NEXUS_WFP_SESSION *session = (NEXUS_WFP_SESSION *)opaque_session;
+    return dynamic_remove_filter(session->engine);
+}
+
+DWORD nexus_wfp_session_install_exact_ipv4(
+    void *opaque_session,
+    const wchar_t *remote_ipv4,
+    const wchar_t *application_path)
+{
+    if (opaque_session == NULL || remote_ipv4 == NULL) {
+        return ERROR_INVALID_PARAMETER;
+    }
+
+    NEXUS_WFP_SESSION *session = (NEXUS_WFP_SESSION *)opaque_session;
+
+    UINT32 remote_address = 0;
+    DWORD result = parse_ipv4_host_order(remote_ipv4, &remote_address);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+
+    FWP_BYTE_BLOB *app_id = NULL;
+    if (application_path != NULL) {
+        result = FwpmGetAppIdFromFileName0(application_path, &app_id);
+        if (result != ERROR_SUCCESS) {
+            return result;
+        }
+    }
+
+    result = dynamic_remove_filter(session->engine);
+    if (result != ERROR_SUCCESS) {
+        if (app_id != NULL) {
+            FwpmFreeMemory0((void **)&app_id);
+        }
+        return result;
+    }
+
+    FWPM_FILTER_CONDITION0 conditions[2];
+    ZeroMemory(conditions, sizeof(conditions));
+    UINT32 condition_count = 0;
+
+    conditions[condition_count].fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS;
+    conditions[condition_count].matchType = FWP_MATCH_EQUAL;
+    conditions[condition_count].conditionValue.type = FWP_UINT32;
+    conditions[condition_count].conditionValue.uint32 = remote_address;
+    condition_count++;
+
+    if (app_id != NULL) {
+        conditions[condition_count].fieldKey = FWPM_CONDITION_ALE_APP_ID;
+        conditions[condition_count].matchType = FWP_MATCH_EQUAL;
+        conditions[condition_count].conditionValue.type = FWP_BYTE_BLOB_TYPE;
+        conditions[condition_count].conditionValue.byteBlob = app_id;
+        condition_count++;
+    }
+
+    FWPM_FILTER0 filter;
+    ZeroMemory(&filter, sizeof(filter));
+    filter.filterKey = NEXUS_DYNAMIC_FILTER_KEY;
+    filter.displayData.name = L"Votal Nexus runtime outbound block";
+    filter.displayData.description =
+        L"Dynamic exact-destination block owned by the Nexus Windows service";
+    filter.layerKey = FWPM_LAYER_ALE_AUTH_CONNECT_V4;
+    filter.subLayerKey = NEXUS_DYNAMIC_SUBLAYER_KEY;
+    filter.weight.type = FWP_EMPTY;
+    filter.numFilterConditions = condition_count;
+    filter.filterCondition = conditions;
+    filter.action.type = FWP_ACTION_BLOCK;
+
+    result = FwpmFilterAdd0(session->engine, &filter, NULL, NULL);
+
+    if (app_id != NULL) {
+        FwpmFreeMemory0((void **)&app_id);
+    }
+    return result;
+}
+
+void nexus_wfp_session_close(void *opaque_session) {
+    if (opaque_session == NULL) {
+        return;
+    }
+
+    NEXUS_WFP_SESSION *session = (NEXUS_WFP_SESSION *)opaque_session;
+    if (session->engine != NULL) {
+        FwpmEngineClose0(session->engine);
+        session->engine = NULL;
+    }
+    HeapFree(GetProcessHeap(), 0, session);
+}
+
 DWORD nexus_wfp_install_exact_ipv4(
     const wchar_t *remote_ipv4,
     const wchar_t *application_path)
