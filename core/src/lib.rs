@@ -2,7 +2,7 @@ pub mod ffi;
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PolicyVersionGuard {
@@ -363,6 +363,7 @@ impl Default for DetectionConfig {
 pub struct RansomwareTracker {
     config: DetectionConfig,
     windows: HashMap<u32, ProcessWindow>,
+    modified_paths: HashMap<u32, HashSet<String>>,
 }
 
 impl RansomwareTracker {
@@ -370,12 +371,11 @@ impl RansomwareTracker {
         Self {
             config,
             windows: HashMap::new(),
+            modified_paths: HashMap::new(),
         }
     }
 
-    pub fn observe(&mut self, pid: u32, now_ms: u64, renamed: bool) -> RansomwareAssessment {
-        self.expire(now_ms);
-
+    fn ensure_capacity_for(&mut self, pid: u32) {
         if !self.windows.contains_key(&pid) && self.windows.len() >= self.config.max_processes {
             if let Some(oldest_pid) = self.windows
                 .values()
@@ -383,8 +383,17 @@ impl RansomwareTracker {
                 .map(|window| window.pid)
             {
                 self.windows.remove(&oldest_pid);
+                self.modified_paths.remove(&oldest_pid);
             }
         }
+    }
+
+    /// Legacy event-count API retained for replay compatibility. Production
+    /// filesystem adapters should use observe_path so repeated writes to one
+    /// file do not inflate the unique-path signal.
+    pub fn observe(&mut self, pid: u32, now_ms: u64, renamed: bool) -> RansomwareAssessment {
+        self.expire(now_ms);
+        self.ensure_capacity_for(pid);
 
         let window = self.windows
             .entry(pid)
@@ -392,9 +401,53 @@ impl RansomwareTracker {
 
         if now_ms.saturating_sub(window.window_started_ms) > self.config.window_ms {
             window.reset(now_ms);
+            self.modified_paths.remove(&pid);
         }
 
         window.observe_file_change(now_ms, renamed);
+        assess_ransomware(&window.features())
+    }
+
+    pub fn observe_path(
+        &mut self,
+        pid: u32,
+        now_ms: u64,
+        path: &str,
+        renamed: bool,
+    ) -> RansomwareAssessment {
+        self.expire(now_ms);
+        self.ensure_capacity_for(pid);
+
+        let should_reset = self.windows.get(&pid).is_some_and(|window| {
+            now_ms.saturating_sub(window.window_started_ms) > self.config.window_ms
+        });
+
+        if should_reset {
+            if let Some(window) = self.windows.get_mut(&pid) {
+                window.reset(now_ms);
+            }
+            self.modified_paths.remove(&pid);
+        }
+
+        self.windows
+            .entry(pid)
+            .or_insert_with(|| ProcessWindow::new(pid, now_ms));
+
+        let is_new_path = self
+            .modified_paths
+            .entry(pid)
+            .or_default()
+            .insert(path.to_string());
+
+        let window = self.windows.get_mut(&pid).expect("window exists");
+        window.last_event_ms = now_ms;
+        if is_new_path {
+            window.unique_paths_modified = window.unique_paths_modified.saturating_add(1);
+        }
+        if renamed {
+            window.rename_count = window.rename_count.saturating_add(1);
+        }
+
         assess_ransomware(&window.features())
     }
 
@@ -408,9 +461,18 @@ impl RansomwareTracker {
 
     pub fn expire(&mut self, now_ms: u64) {
         let window_ms = self.config.window_ms;
-        self.windows.retain(|_, window| {
-            now_ms.saturating_sub(window.last_event_ms) <= window_ms
-        });
+        let expired: Vec<u32> = self
+            .windows
+            .iter()
+            .filter_map(|(pid, window)| {
+                (now_ms.saturating_sub(window.last_event_ms) > window_ms).then_some(*pid)
+            })
+            .collect();
+
+        for pid in expired {
+            self.windows.remove(&pid);
+            self.modified_paths.remove(&pid);
+        }
     }
 
     pub fn tracked_processes(&self) -> usize {
@@ -743,6 +805,22 @@ mod tests {
         assert_eq!(queue.len(), 2);
         assert_eq!(queue.dropped(), 1);
         assert_eq!(queue.pop(), Some(1));
+    }
+
+    #[test]
+    fn path_tracker_deduplicates_repeated_writes() {
+        let mut tracker = RansomwareTracker::new(DetectionConfig {
+            window_ms: 10_000,
+            max_processes: 10,
+        });
+
+        tracker.observe_path(7, 1, "/tmp/a", false);
+        tracker.observe_path(7, 2, "/tmp/a", false);
+        let assessment = tracker.observe_path(7, 3, "/tmp/b", true);
+
+        assert_eq!(tracker.windows.get(&7).unwrap().unique_paths_modified, 2);
+        assert_eq!(tracker.windows.get(&7).unwrap().rename_count, 1);
+        assert_eq!(assessment.severity, "low");
     }
 
     #[test]
