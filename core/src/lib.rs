@@ -162,6 +162,8 @@ pub struct AgentActionRule {
     #[serde(default)]
     pub kinds: Vec<AgentActionKind>,
     #[serde(default)]
+    pub agent_ids: Vec<String>,
+    #[serde(default)]
     pub mcp_servers: Vec<String>,
     #[serde(default)]
     pub tool_names: Vec<String>,
@@ -360,6 +362,7 @@ pub fn validate_policy(policy: &PolicyBundle) -> Result<(), PolicyVerificationEr
 
     for rule in &policy.agent_action_rules {
         let has_selector = !rule.kinds.is_empty()
+            || !rule.agent_ids.is_empty()
             || !rule.mcp_servers.is_empty()
             || !rule.tool_names.is_empty()
             || !rule.operations.is_empty()
@@ -371,11 +374,13 @@ pub fn validate_policy(policy: &PolicyBundle) -> Result<(), PolicyVerificationEr
             || !ids.insert(rule.id.as_str())
             || !has_selector
             || rule.kinds.len() > 16
+            || rule.agent_ids.len() > 64
             || rule.mcp_servers.len() > 64
             || rule.tool_names.len() > 64
             || rule.operations.len() > 64
             || rule.resource_prefixes.len() > 64
             || rule.risk_tags.len() > 64
+            || rule.agent_ids.iter().any(|value| value.is_empty() || value.len() > 256)
             || rule.mcp_servers.iter().any(|value| value.is_empty() || value.len() > 256)
             || rule.tool_names.iter().any(|value| value.is_empty() || value.len() > 256)
             || rule.operations.iter().any(|value| value.is_empty() || value.len() > 256)
@@ -496,6 +501,10 @@ impl PolicyBundle {
     pub fn evaluate_agent_action(&self, event: &AgentActionEvent) -> AgentActionDecision {
         for rule in &self.agent_action_rules {
             let kind_matches = rule.kinds.is_empty() || rule.kinds.contains(&event.kind);
+            let agent_matches = rule.agent_ids.is_empty()
+                || event.agent_id.as_ref().is_some_and(|value| {
+                    rule.agent_ids.iter().any(|candidate| candidate == value)
+                });
             let server_matches = rule.mcp_servers.is_empty()
                 || event.mcp_server.as_ref().is_some_and(|value| {
                     rule.mcp_servers.iter().any(|candidate| candidate == value)
@@ -516,6 +525,7 @@ impl PolicyBundle {
                 });
 
             if !(kind_matches
+                && agent_matches
                 && server_matches
                 && tool_matches
                 && operation_matches
@@ -1092,6 +1102,7 @@ mod tests {
                 id: "deny-sensitive-write".into(),
                 action: DecisionAction::Deny,
                 kinds: vec![AgentActionKind::McpToolCall],
+                agent_ids: vec!["agent-a".into()],
                 mcp_servers: vec!["filesystem".into()],
                 tool_names: vec!["write_file".into()],
                 operations: vec!["write".into()],
@@ -1137,6 +1148,7 @@ mod tests {
                 id: "audit-tool".into(),
                 action: DecisionAction::Deny,
                 kinds: vec![],
+                agent_ids: vec![],
                 mcp_servers: vec![],
                 tool_names: vec!["shell_exec".into()],
                 operations: vec![],
