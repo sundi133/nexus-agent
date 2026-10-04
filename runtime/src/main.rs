@@ -27,7 +27,7 @@ use windows_service::{
 #[cfg(windows)]
 const WINDOWS_SERVICE_NAME: &str = "VotalNexusRuntime";
 #[cfg(windows)]
-const WINDOWS_CONFIG_PATH: &str = r"C:\ProgramData\Votal\Nexus\runtime.json";
+const WINDOWS_CONFIG_PATH: &str = r"C:\Program Files\Votal\Nexus\runtime.json";
 
 fn load_public_key(path: &Path) -> Result<[u8; 32], String> {
     let encoded = fs::read_to_string(path)
