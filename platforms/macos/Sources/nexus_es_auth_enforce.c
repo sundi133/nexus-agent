@@ -162,12 +162,12 @@ static void handle_auth_exec(es_client_t *client, const es_message_t *message) {
         reason = "audit_would_deny";
     }
 
-    es_return_t response = es_respond_auth_result(client, message, result, false);
+    es_respond_result_t response = es_respond_auth_result(client, message, result, false);
     const uint64_t finished_us = monotonic_us();
     const uint64_t latency_us =
         finished_us >= started_us ? finished_us - started_us : 0;
 
-    if (response != ES_RETURN_SUCCESS) {
+    if (response != ES_RESPOND_RESULT_SUCCESS) {
         fprintf(stderr,
                 "nexus-es-auth-enforce: response_failed target=%s requested=%s latency_us=%llu\n",
                 path,
