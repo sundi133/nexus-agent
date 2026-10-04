@@ -22,3 +22,5 @@ jobs:
         run: cargo test --manifest-path platforms/linux/Cargo.toml
       - name: Build Linux adapter
         run: cargo build --release --manifest-path platforms/linux/Cargo.toml
+      - name: Validate nftables control script
+        run: bash -n platforms/linux/scripts/nft_control.sh
