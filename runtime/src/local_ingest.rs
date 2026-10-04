@@ -16,6 +16,18 @@ use std::{
 const MAX_HEADER_BYTES: usize = 16 * 1024;
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
+#[derive(Debug, Clone)]
+pub struct ProducerCredential {
+    pub agent_id: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum LocalIngestAuth {
+    LegacyToken(String),
+    BoundProducers(Vec<ProducerCredential>),
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AgentActionAuditRecord {
     pub event: AgentActionEvent,
@@ -24,7 +36,7 @@ pub struct AgentActionAuditRecord {
 
 pub fn spawn_local_ingest(
     port: u16,
-    token: String,
+    auth: LocalIngestAuth,
     policy: Arc<RwLock<Option<PolicyBundle>>>,
     sender: Sender<AgentActionAuditRecord>,
 ) -> io::Result<thread::JoinHandle<()>> {
@@ -34,7 +46,7 @@ pub fn spawn_local_ingest(
     Ok(thread::spawn(move || loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                let _ = handle_connection(stream, &token, &policy, &sender);
+                let _ = handle_connection(stream, &auth, &policy, &sender);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(25));
@@ -48,7 +60,7 @@ pub fn spawn_local_ingest(
 
 fn handle_connection(
     mut stream: TcpStream,
-    token: &str,
+    auth: &LocalIngestAuth,
     policy: &Arc<RwLock<Option<PolicyBundle>>>,
     sender: &Sender<AgentActionAuditRecord>,
 ) -> io::Result<()> {
@@ -109,11 +121,12 @@ fn handle_connection(
     let supplied_token = authorization
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer "));
-    if !supplied_token.is_some_and(|supplied| {
-        constant_time_eq(supplied.as_bytes(), token.as_bytes())
-    }) {
+    let Some(supplied_token) = supplied_token else {
         return write_error_response(&mut stream, 401, "unauthorized");
-    }
+    };
+    let Some(authenticated_agent_id) = authenticate_producer(auth, supplied_token) else {
+        return write_error_response(&mut stream, 401, "unauthorized");
+    };
 
     let Some(body_len) = content_length else {
         return write_error_response(&mut stream, 411, "content-length required");
@@ -125,12 +138,35 @@ fn handle_connection(
     let mut body = vec![0u8; body_len];
     reader.read_exact(&mut body)?;
 
-    let event: AgentActionEvent = match serde_json::from_slice(&body) {
+    let mut event: AgentActionEvent = match serde_json::from_slice(&body) {
         Ok(event) => event,
         Err(_) => return write_error_response(&mut stream, 400, "invalid JSON"),
     };
     if event.validate().is_err() {
         return write_error_response(&mut stream, 422, "invalid agent action");
+    }
+
+    match authenticated_agent_id {
+        Some(bound_agent_id) => {
+            if event
+                .agent_id
+                .as_deref()
+                .is_some_and(|claimed| claimed != bound_agent_id)
+            {
+                return write_error_response(
+                    &mut stream,
+                    403,
+                    "agent identity does not match producer credential",
+                );
+            }
+            event.agent_id = Some(bound_agent_id.to_string());
+        }
+        None => {
+            // Legacy shared-token mode authenticates bridge access only. It does
+            // not establish agent identity, so self-reported identity cannot
+            // participate in signed agent_id policy selectors.
+            event.agent_id = None;
+        }
     }
 
     let decision = decide_agent_action(policy, &event);
@@ -174,6 +210,32 @@ fn fail_open_decision(reason: &str) -> AgentActionDecision {
     }
 }
 
+fn authenticate_producer<'a>(
+    auth: &'a LocalIngestAuth,
+    supplied_token: &str,
+) -> Option<Option<&'a str>> {
+    match auth {
+        LocalIngestAuth::LegacyToken(token) => constant_time_eq(
+            supplied_token.as_bytes(),
+            token.as_bytes(),
+        )
+        .then_some(None),
+        LocalIngestAuth::BoundProducers(producers) => {
+            let mut matched: Option<&str> = None;
+            for producer in producers {
+                let is_match = constant_time_eq(
+                    supplied_token.as_bytes(),
+                    producer.token.as_bytes(),
+                );
+                if is_match {
+                    matched = Some(producer.agent_id.as_str());
+                }
+            }
+            matched.map(Some)
+        }
+    }
+}
+
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     if left.len() != right.len() {
         return false;
@@ -211,6 +273,7 @@ fn write_error_response(stream: &mut TcpStream, status: u16, message: &str) -> i
     let reason = match status {
         400 => "Bad Request",
         401 => "Unauthorized",
+        403 => "Forbidden",
         404 => "Not Found",
         411 => "Length Required",
         413 => "Payload Too Large",
@@ -289,6 +352,35 @@ mod tests {
         assert!(constant_time_eq(b"abcdef", b"abcdef"));
         assert!(!constant_time_eq(b"abcdef", b"abcdeg"));
         assert!(!constant_time_eq(b"abcdef", b"abc"));
+    }
+
+    #[test]
+    fn legacy_token_authenticates_without_agent_identity() {
+        let auth = LocalIngestAuth::LegacyToken("a".repeat(32));
+        assert_eq!(
+            authenticate_producer(&auth, &"a".repeat(32)),
+            Some(None)
+        );
+        assert_eq!(authenticate_producer(&auth, &"b".repeat(32)), None);
+    }
+
+    #[test]
+    fn bound_producer_token_returns_configured_agent_identity() {
+        let auth = LocalIngestAuth::BoundProducers(vec![
+            ProducerCredential {
+                agent_id: "agent-a".into(),
+                token: "a".repeat(32),
+            },
+            ProducerCredential {
+                agent_id: "agent-b".into(),
+                token: "b".repeat(32),
+            },
+        ]);
+        assert_eq!(
+            authenticate_producer(&auth, &"b".repeat(32)),
+            Some(Some("agent-b"))
+        );
+        assert_eq!(authenticate_producer(&auth, &"c".repeat(32)), None);
     }
 
     #[test]
