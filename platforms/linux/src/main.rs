@@ -420,18 +420,18 @@ mod linux_agent {
         };
 
         match select_network_plan(policy) {
-            Ok(None) => (
+            Ok(plans) if plans.is_empty() => (
                 None,
                 CapabilityState::Shadow,
                 if policy.mode == nexus_agent_core::EnforcementMode::Audit {
-                    "policy is audit mode; nftables runtime rule intentionally not installed"
+                    "policy is audit mode; nftables runtime rules intentionally not installed"
                         .to_string()
                 } else {
-                    "no supported exact-IPv4 deny network rule configured".to_string()
+                    "no supported exact-IPv4 deny network rules configured".to_string()
                 },
             ),
             Err(detail) => (None, CapabilityState::Shadow, detail),
-            Ok(Some(plan)) => match NftLease::start(plan) {
+            Ok(plans) => match NftLease::start(plans) {
                 Ok(lease) => {
                     let detail = lease.detail();
                     (Some(lease), CapabilityState::Active, detail)
