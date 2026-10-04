@@ -46,7 +46,7 @@ Planned.
 - Network Extension content filtering
 
 ## M5 — Windows
-Status: service/process-telemetry baseline and signed-policy shadow classification implemented; ETW and native enforcement remain.
+Status: ETW process telemetry, signed-policy shadow classification, health reporting, anti-rollback watermark, and narrow dynamic WFP enforcement are implemented. Process blocking and broader network policy remain.
 
 - Windows service
 - ETW telemetry
@@ -55,10 +55,20 @@ Status: service/process-telemetry baseline and signed-policy shadow classificati
 - signed installer/driver pipeline
 
 ## M6 — Linux
-Status: fanotify audit collector and signed-policy shadow classification implemented; permission-event shadow/enforcement and eBPF remain.
+Status: fanotify audit collection, signed-policy shadow classification, permission-event shadow/controlled enforcement harnesses, ransomware unique-path correlation, health reporting, anti-rollback watermark, and controlled nftables blocking are implemented. Signed-policy nftables orchestration and eBPF remain.
 
 - Rust daemon
 - eBPF telemetry with explicit kernel support matrix
 - fanotify permission events
 - nftables network policy
 - optional BPF LSM where supported
+
+
+## Cross-platform ransomware detection
+Status: detection pipeline active in macOS packaged extension and Linux audit collector; Windows file-I/O telemetry remains.
+
+- true unique-path modification tracking per process/window
+- rename-rate signal
+- bounded process cardinality and expiry
+- repeated writes to one file do not inflate unique-path count
+- high/critical findings are detection-only; no heuristic-only process termination
