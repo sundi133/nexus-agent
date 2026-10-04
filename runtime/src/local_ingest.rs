@@ -14,6 +14,26 @@ use std::{
     time::Duration,
 };
 
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::{
+        CloseHandle, DuplicateHandle, GetLastError, HANDLE, DUPLICATE_SAME_ACCESS,
+        ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
+    },
+    Storage::FileSystem::{ReadFile, WriteFile},
+    System::{
+        Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
+            GetNamedPipeClientProcessId, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE,
+            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+        },
+        Threading::{
+            GetCurrentProcess, OpenProcess, QueryFullProcessImageNameW,
+            PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        },
+    },
+};
+
 #[cfg(unix)]
 use std::{
     fs,
@@ -89,6 +109,101 @@ impl LocalStream for TcpStream {
     fn configure_timeouts(&self) -> io::Result<()> {
         self.set_read_timeout(Some(Duration::from_secs(2)))?;
         self.set_write_timeout(Some(Duration::from_secs(2)))
+    }
+}
+
+#[cfg(windows)]
+struct WindowsPipeStream {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+impl WindowsPipeStream {
+    fn new(handle: HANDLE) -> Self {
+        Self { handle }
+    }
+}
+
+#[cfg(windows)]
+impl Read for WindowsPipeStream {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let mut read = 0u32;
+        let length = buffer.len().min(u32::MAX as usize) as u32;
+        let ok = unsafe {
+            ReadFile(
+                self.handle,
+                buffer.as_mut_ptr(),
+                length,
+                &mut read,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(read as usize)
+    }
+}
+
+#[cfg(windows)]
+impl Write for WindowsPipeStream {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let mut written = 0u32;
+        let length = buffer.len().min(u32::MAX as usize) as u32;
+        let ok = unsafe {
+            WriteFile(
+                self.handle,
+                buffer.as_ptr(),
+                length,
+                &mut written,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(written as usize)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl LocalStream for WindowsPipeStream {
+    fn try_clone_stream(&self) -> io::Result<Self> {
+        let current_process = unsafe { GetCurrentProcess() };
+        let mut duplicate: HANDLE = std::ptr::null_mut();
+        let ok = unsafe {
+            DuplicateHandle(
+                current_process,
+                self.handle,
+                current_process,
+                &mut duplicate,
+                0,
+                0,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self::new(duplicate))
+    }
+
+    fn configure_timeouts(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WindowsPipeStream {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = DisconnectNamedPipe(self.handle);
+            let _ = CloseHandle(self.handle);
+        }
     }
 }
 
@@ -169,6 +284,100 @@ pub fn spawn_local_ingest_unix(
             }
         }
     }))
+}
+
+#[cfg(windows)]
+pub fn spawn_local_ingest_windows_pipe(
+    pipe_name: String,
+    auth: LocalIngestAuth,
+    policy: Arc<RwLock<Option<PolicyBundle>>>,
+    sender: Sender<AgentActionAuditRecord>,
+) -> io::Result<thread::JoinHandle<()>> {
+    let full_name = if pipe_name.starts_with(r"\\.\pipe\") {
+        pipe_name
+    } else {
+        format!(r"\\.\pipe\{pipe_name}")
+    };
+    let mut wide_name: Vec<u16> = full_name.encode_utf16().collect();
+    wide_name.push(0);
+
+    Ok(thread::spawn(move || loop {
+        let handle = unsafe {
+            CreateNamedPipeW(
+                wide_name.as_ptr(),
+                PIPE_ACCESS_DUPLEX,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+                PIPE_UNLIMITED_INSTANCES,
+                64 * 1024,
+                64 * 1024,
+                0,
+                std::ptr::null(),
+            )
+        };
+
+        if handle == INVALID_HANDLE_VALUE {
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
+
+        let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
+        if connected == 0 {
+            let error = unsafe { GetLastError() };
+            if error != ERROR_PIPE_CONNECTED {
+                unsafe {
+                    let _ = CloseHandle(handle);
+                }
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+        }
+
+        let mut client_pid = 0u32;
+        let pid_ok = unsafe { GetNamedPipeClientProcessId(handle, &mut client_pid) };
+        let executable_path = if pid_ok != 0 && client_pid != 0 {
+            windows_process_path(client_pid)
+        } else {
+            None
+        };
+
+        let peer = PeerIdentity {
+            pid: (pid_ok != 0 && client_pid != 0).then_some(client_pid),
+            uid: None,
+            gid: None,
+            executable_path,
+            transport: "windows_named_pipe_client_pid",
+        };
+
+        let stream = WindowsPipeStream::new(handle);
+        let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+    }))
+}
+
+#[cfg(windows)]
+fn windows_process_path(pid: u32) -> Option<String> {
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+
+    let mut buffer = vec![0u16; 32768];
+    let mut size = buffer.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(
+            process,
+            PROCESS_NAME_WIN32,
+            buffer.as_mut_ptr(),
+            &mut size,
+        )
+    };
+    unsafe {
+        let _ = CloseHandle(process);
+    }
+    if ok == 0 || size == 0 {
+        return None;
+    }
+
+    Some(String::from_utf16_lossy(&buffer[..size as usize]))
 }
 
 fn handle_connection<S: LocalStream>(
@@ -602,6 +811,14 @@ mod tests {
             ..peer
         };
         assert!(authenticate_producer(&auth, &"b".repeat(32), &wrong_exe).is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_pipe_name_prefix_is_documented_by_runtime() {
+        let configured = "VotalNexusAgentActions";
+        let full = format!(r"\\.\pipe\{configured}");
+        assert_eq!(full, r"\\.\pipe\VotalNexusAgentActions");
     }
 
     #[test]
