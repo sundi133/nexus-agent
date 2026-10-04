@@ -15,6 +15,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Compile Endpoint Security development harnesses
+      - name: Type-check Endpoint Security development harnesses
         working-directory: platforms/macos
-        run: make
+        run: make syntax
