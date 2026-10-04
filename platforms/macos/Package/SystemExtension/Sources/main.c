@@ -1,6 +1,7 @@
 #include <EndpointSecurity/EndpointSecurity.h>
 #include <bsm/libbsm.h>
 #include <dispatch/dispatch.h>
+#include <errno.h>
 #include <os/log.h>
 #include <pthread.h>
 #include <signal.h>
@@ -10,6 +11,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "NexusTrustRoot.h"
 #include "nexus_core.h"
@@ -17,6 +19,7 @@
 #define POLICY_PATH "/Library/Application Support/Votal/Nexus/policy.signed.json"
 #define POLICY_VERSION_PATH "/Library/Application Support/Votal/Nexus/policy.version"
 #define HEALTH_PATH "/Library/Application Support/Votal/Nexus/health.json"
+#define CONTAINMENT_DISABLE_PATH "/Library/Application Support/Votal/Nexus/disable-containment"
 #define MAX_POLICY_BYTES (1024 * 1024)
 
 static os_log_t g_log;
@@ -365,6 +368,42 @@ static void observe_file_activity(const es_message_t *message) {
             response.action,
             response.would_enforce ? "true" : "false",
             response.enforce ? "true" : "false");
+
+        if (response.enforce) {
+            if (response.action != 1) {
+                os_log_error(
+                    g_log,
+                    "containment_skipped pid=%{public}d reason=unsupported_action action=%{public}u",
+                    pid,
+                    response.action);
+            } else if (atomic_load_explicit(&g_kill_switch, memory_order_relaxed)) {
+                os_log_error(
+                    g_log,
+                    "containment_skipped pid=%{public}d reason=kill_switch",
+                    pid);
+            } else if (access(CONTAINMENT_DISABLE_PATH, F_OK) == 0) {
+                os_log_error(
+                    g_log,
+                    "containment_skipped pid=%{public}d reason=local_disable_switch",
+                    pid);
+            } else if (pid <= 1 || pid == getpid()) {
+                os_log_error(
+                    g_log,
+                    "containment_skipped pid=%{public}d reason=protected_pid",
+                    pid);
+            } else if (kill(pid, SIGKILL) == 0) {
+                os_log_error(
+                    g_log,
+                    "containment_applied pid=%{public}d action=terminate_process",
+                    pid);
+            } else {
+                os_log_error(
+                    g_log,
+                    "containment_failed pid=%{public}d errno=%{public}d",
+                    pid,
+                    errno);
+            }
+        }
     }
 }
 
