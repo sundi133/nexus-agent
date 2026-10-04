@@ -3,37 +3,70 @@ import SwiftUI
 @main
 struct NexusAgentApp: App {
     @StateObject private var extensionManager = SystemExtensionManager()
+    @StateObject private var contentFilterManager = ContentFilterManager()
 
     var body: some Scene {
         WindowGroup {
-            ContentView(manager: extensionManager)
-                .frame(minWidth: 520, minHeight: 280)
+            ContentView(
+                manager: extensionManager,
+                filterManager: contentFilterManager
+            )
+            .frame(minWidth: 620, minHeight: 420)
         }
     }
 }
 
 private struct ContentView: View {
     @ObservedObject var manager: SystemExtensionManager
+    @ObservedObject var filterManager: ContentFilterManager
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 18) {
             Text("Nexus Agent")
                 .font(.largeTitle)
-            Text("Endpoint Security system extension")
-                .font(.headline)
-            Text(manager.status)
-                .textSelection(.enabled)
 
-            HStack {
-                Button("Activate Extension") {
-                    manager.activate()
+            GroupBox("Endpoint Security") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(manager.status)
+                        .textSelection(.enabled)
+                    HStack {
+                        Button("Activate Extension") {
+                            manager.activate()
+                        }
+                        Button("Deactivate Extension") {
+                            manager.deactivate()
+                        }
+                    }
                 }
-                Button("Deactivate Extension") {
-                    manager.deactivate()
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text("Production deployments should activate and approve the extension through managed enterprise configuration where appropriate.")
+            GroupBox("Network Content Filter") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text(filterManager.status)
+                        .textSelection(.enabled)
+
+                    TextField(
+                        "Exact development host to block, e.g. blocked.example",
+                        text: $filterManager.testBlockedHost
+                    )
+
+                    HStack {
+                        Button("Enable Filter") {
+                            filterManager.enable()
+                        }
+                        Button("Disable Filter") {
+                            filterManager.disable()
+                        }
+                    }
+
+                    Text("The development filter blocks only an exact configured hostname. Leave the field empty for allow-only mode.")
+                        .font(.caption)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Text("Production deployments should use managed approval and signed policy rather than manually configured test rules.")
                 .font(.caption)
         }
         .padding(24)
