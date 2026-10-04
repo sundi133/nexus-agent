@@ -17,4 +17,4 @@ jobs:
       - uses: actions/checkout@v4
       - name: Type-check Endpoint Security development harnesses
         working-directory: platforms/macos
-        run: make syntax
+        run: make syntax package-syntax
