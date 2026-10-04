@@ -45,7 +45,10 @@ fn load_local_ingest_token(path: &Path) -> Result<String, String> {
     let token = fs::read_to_string(path)
         .map_err(|error| format!("cannot read local ingest token: {error}"))?;
     let token = token.trim().to_string();
-    if token.len() < 32 || token.len() > 512 || token.contains(['\r', '\n']) {
+    if token.len() < 32
+        || token.len() > 512
+        || token.chars().any(|value| value == '\r' || value == '\n')
+    {
         return Err("local ingest token must be 32-512 non-newline characters".to_string());
     }
     Ok(token)
