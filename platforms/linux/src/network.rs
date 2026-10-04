@@ -213,14 +213,14 @@ mod tests {
 
     #[test]
     fn audit_policy_has_no_enforcement_plan() {
-        assert_eq!(
+        assert!(
             select_network_plan(&policy(
                 EnforcementMode::Audit,
                 vec!["203.0.113.10"],
                 vec![],
             ))
-            .unwrap(),
-            None
+            .unwrap()
+            .is_empty()
         );
     }
 
