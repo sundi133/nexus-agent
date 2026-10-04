@@ -62,6 +62,8 @@ mod service {
     const POLICY_PATH: &str = r"C:\ProgramData\Votal\Nexus\policy.signed.json";
     const POLICY_VERSION_PATH: &str = r"C:\ProgramData\Votal\Nexus\policy.version";
     const HEALTH_PATH: &str = r"C:\ProgramData\Votal\Nexus\health.json";
+    const CONTAINMENT_DISABLE_PATH: &str =
+        r"C:\ProgramData\Votal\Nexus\disable-containment";
     // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
     const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
