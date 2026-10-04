@@ -270,7 +270,7 @@ static void handle_auth_exec(es_client_t *client, const es_message_t *message) {
 
     if (g_ransomware_tracker != NULL &&
         (decision == NEXUS_DECISION_DENY || decision == NEXUS_DECISION_ALERT)) {
-        pid_t pid = audit_token_to_pid(message->process->audit_token);
+        pid_t pid = audit_token_to_pid(message->event.exec.target->audit_token);
         (void)nexus_ransomware_mark_suspicious_process(
             g_ransomware_tracker,
             (uint32_t)pid,
