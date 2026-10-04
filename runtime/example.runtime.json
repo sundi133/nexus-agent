@@ -19,5 +19,6 @@
   "cycle_interval_ms": 5000,
   "spool_max_bytes": 67108864,
   "segment_max_bytes": 4194304,
-  "local_ingest_producers": []
+  "local_ingest_producers": [],
+  "local_ingest_socket_path": null
 }
