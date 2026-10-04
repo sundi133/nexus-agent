@@ -980,7 +980,7 @@ mod tests {
         assert!(peer.uid.is_some());
         assert!(peer.gid.is_some());
         assert!(peer.transport.starts_with("unix_socket_"));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             assert_eq!(peer.pid, Some(std::process::id()));
             assert!(peer.executable_path.is_some());
