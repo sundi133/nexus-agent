@@ -1,0 +1,21 @@
+[Unit]
+Description=Votal Nexus Managed Runtime
+After=network-online.target nexus-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/votal/nexus/nexus-agent-runtime /etc/votal/nexus/runtime.json
+Restart=on-failure
+RestartSec=10
+User=nexus-runtime
+Group=votal-nexus
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/votal/nexus
+ReadOnlyPaths=/etc/votal/nexus
+
+[Install]
+WantedBy=multi-user.target
