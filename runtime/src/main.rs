@@ -69,6 +69,7 @@ fn load_bound_producers(
             token,
             expected_uid: producer.expected_uid,
             executable_paths: producer.executable_paths.clone(),
+            executable_sha256: producer.executable_sha256.clone(),
         });
     }
 
