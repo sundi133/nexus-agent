@@ -5,7 +5,7 @@ fn main() {
 
 #[cfg(target_os = "linux")]
 mod linux_agent {
-    use nexus_agent_core::{verify_signed_policy, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
+    use nexus_agent_core::{verify_signed_policy, AgentHealth, CapabilityState, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
     use std::{
         ffi::CString,
         fs::{read_link, OpenOptions},
@@ -20,6 +20,7 @@ mod linux_agent {
     const EVENT_LOG_PATH: &str = "/var/lib/votal/nexus/events.jsonl";
     const BUFFER_SIZE: usize = 64 * 1024;
     const POLICY_PATH: &str = "/var/lib/votal/nexus/policy.signed.json";
+    const HEALTH_PATH: &str = "/var/lib/votal/nexus/health.json";
     // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
     const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
 
@@ -30,6 +31,7 @@ mod linux_agent {
             "nexus-agent-linux: fanotify audit collector active on /; policy_loaded={}; enforcement=shadow",
             policy.is_some()
         );
+        let _ = write_health(&build_health(policy.as_ref()));
 
         let mut buffer = vec![0u8; BUFFER_SIZE];
 
@@ -143,6 +145,53 @@ mod linux_agent {
         Ok(())
     }
 
+
+    fn build_health(policy: Option<&PolicyBundle>) -> AgentHealth {
+        let policy_version = policy.map(|policy| policy.version);
+        AgentHealth::new("linux", policy_version)
+            .with_capability(
+                "policy_verification",
+                if policy.is_some() {
+                    CapabilityState::Active
+                } else {
+                    CapabilityState::Unavailable
+                },
+                if policy.is_some() {
+                    "Ed25519 signed policy verified"
+                } else {
+                    "no verified policy loaded"
+                },
+            )
+            .with_capability(
+                "filesystem_telemetry",
+                CapabilityState::Active,
+                "fanotify notification mode: executable-open and close-write",
+            )
+            .with_capability(
+                "execution_policy",
+                if policy.is_some() {
+                    CapabilityState::Shadow
+                } else {
+                    CapabilityState::Unavailable
+                },
+                if policy.is_some() {
+                    "policy is evaluated after notification; no denial"
+                } else {
+                    "no verified policy; execution enforcement unavailable"
+                },
+            )
+    }
+
+    fn write_health(health: &AgentHealth) -> io::Result<()> {
+        let path = std::path::Path::new(HEALTH_PATH);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(&mut file, health)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
 
     fn load_verified_policy() -> Option<PolicyBundle> {
         if POLICY_PUBLIC_KEY.iter().all(|byte| *byte == 0) {
