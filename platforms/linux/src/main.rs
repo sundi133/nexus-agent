@@ -12,7 +12,8 @@ mod linux_agent {
     use nexus_agent_core::{
         plan_ransomware_response, verify_signed_policy, AgentHealth, CapabilityState,
         DetectionConfig, EventKind, PolicyBundle, RansomwareAssessment,
-        RansomwareResponseDecision, RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
+        RansomwareResponseAction, RansomwareResponseDecision, RansomwareTracker,
+        SecurityEvent, SignedPolicyEnvelope,
     };
     use std::{
         collections::HashSet,
