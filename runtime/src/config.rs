@@ -12,6 +12,8 @@ const DEFAULT_SEGMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 pub struct RuntimeConfig {
     pub control_plane: ControlPlaneConfig,
     pub spool_dir: PathBuf,
+    pub policy_signed_path: PathBuf,
+    pub policy_watermark_path: PathBuf,
     #[serde(default = "default_spool_max_bytes")]
     pub spool_max_bytes: u64,
     #[serde(default = "default_segment_max_bytes")]
@@ -112,6 +114,8 @@ mod tests {
                 request_timeout_ms: 30_000,
             },
             spool_dir: "spool".into(),
+            policy_signed_path: "policy.signed.json".into(),
+            policy_watermark_path: "policy.version".into(),
             spool_max_bytes: 1024,
             segment_max_bytes: 256,
         }
