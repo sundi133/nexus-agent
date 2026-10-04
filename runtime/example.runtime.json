@@ -3,9 +3,10 @@
     "policy_url": "https://control.example/v1/endpoint/policy",
     "health_url": "https://control.example/v1/endpoint/health",
     "events_url": "https://control.example/v1/endpoint/events",
-    "bearer_token_file": "/var/lib/votal/nexus/device.token",
+    "bearer_token_file": null,
     "connect_timeout_ms": 5000,
-    "request_timeout_ms": 30000
+    "request_timeout_ms": 30000,
+    "device_credential_file": "/var/lib/votal/nexus/device.credential.json"
   },
   "spool_dir": "/var/lib/votal/nexus/spool",
   "policy_signed_path": "/var/lib/votal/nexus/policy.signed.json",
