@@ -16,6 +16,7 @@ Agent-action rules live in the same Ed25519-signed policy bundle as endpoint rul
       "id": "deny-sensitive-filesystem-write",
       "action": "deny",
       "kinds": ["mcp_tool_call"],
+      "agent_ids": ["coding-agent"],
       "mcp_servers": ["filesystem"],
       "tool_names": ["write_file"],
       "operations": ["write"],
@@ -31,6 +32,7 @@ All populated selector dimensions must match. Values inside one dimension are al
 For the rule above:
 
 - kind must be `mcp_tool_call`;
+- logical agent ID must be `coding-agent`;
 - server must be `filesystem`;
 - tool must be `write_file`;
 - operation must be `write`;
