@@ -8,6 +8,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include "NexusTrustRoot.h"
@@ -24,6 +25,11 @@ static pthread_rwlock_t g_policy_lock = PTHREAD_RWLOCK_INITIALIZER;
 static atomic_bool g_kill_switch = false;
 static atomic_bool g_reload_requested = false;
 static NexusRansomwareTrackerHandle *g_ransomware_tracker = NULL;
+
+static void ensure_state_directory(void) {
+    (void)mkdir("/Library/Application Support/Votal", 0755);
+    (void)mkdir("/Library/Application Support/Votal/Nexus", 0755);
+}
 
 static bool trust_root_configured(void) {
     for (size_t i = 0; i < sizeof(NEXUS_POLICY_PUBLIC_KEY); ++i) {
@@ -339,6 +345,7 @@ static void handle_message(es_client_t *client, const es_message_t *message) {
 
 int main(void) {
     g_log = os_log_create("ai.votal.nexus.agent.endpoint", "endpoint-security");
+    ensure_state_directory();
     signal(SIGUSR1, set_kill_switch);
     signal(SIGUSR2, clear_kill_switch);
     signal(SIGHUP, request_policy_reload);
