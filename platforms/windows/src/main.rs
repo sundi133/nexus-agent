@@ -18,11 +18,11 @@ mod service {
     use nexus_agent_core::{
         plan_ransomware_response, verify_signed_policy, AgentHealth, CapabilityState,
         DecisionAction, DetectionConfig, EnforcementMode, EventKind, PolicyBundle,
-        RansomwareAssessment, RansomwareResponseDecision, RansomwareTracker, SecurityEvent,
-        SignedPolicyEnvelope,
+        RansomwareAssessment, RansomwareResponseAction, RansomwareResponseDecision,
+        RansomwareTracker, SecurityEvent, SignedPolicyEnvelope,
     };
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet},
         ffi::OsString,
         fs::{create_dir_all, OpenOptions},
         io::{self, Write},
@@ -50,8 +50,8 @@ mod service {
                 TH32CS_SNAPPROCESS,
             },
             Threading::{
-                OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_LIMITED_INFORMATION,
+                GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, TerminateProcess,
+                PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
             },
         },
     };
@@ -200,12 +200,14 @@ mod service {
     ) {
         let started = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
+        let mut contained_pids = HashSet::new();
 
         loop {
             drain_file_activity(
                 file_rx,
                 policy,
                 &mut ransomware_tracker,
+                &mut contained_pids,
                 started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             );
             if shutdown_rx.try_recv().is_ok() {
@@ -248,12 +250,14 @@ mod service {
         let mut known = snapshot_processes().unwrap_or_default();
         let started = Instant::now();
         let mut ransomware_tracker = RansomwareTracker::new(DetectionConfig::default());
+        let mut contained_pids = HashSet::new();
 
         loop {
             drain_file_activity(
                 file_rx,
                 policy,
                 &mut ransomware_tracker,
+                &mut contained_pids,
                 started.elapsed().as_millis().min(u64::MAX as u128) as u64,
             );
             match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
@@ -291,10 +295,17 @@ mod service {
         file_rx: &mpsc::Receiver<EtwFileActivity>,
         policy: Option<&PolicyBundle>,
         ransomware_tracker: &mut RansomwareTracker,
+        contained_pids: &mut HashSet<u32>,
         now_ms: u64,
     ) {
         while let Ok(activity) = file_rx.try_recv() {
-            let _ = emit_file_activity(activity, policy, ransomware_tracker, now_ms);
+            let _ = emit_file_activity(
+                activity,
+                policy,
+                ransomware_tracker,
+                contained_pids,
+                now_ms,
+            );
         }
     }
 
@@ -327,10 +338,67 @@ mod service {
         }
     }
 
+    fn execute_ransomware_response(
+        response: Option<&RansomwareResponseDecision>,
+        contained_pids: &mut HashSet<u32>,
+    ) -> Option<String> {
+        let response = response?;
+        if !response.matched || !response.enforce {
+            return None;
+        }
+
+        if response.action != RansomwareResponseAction::TerminateProcess {
+            return Some(format!(
+                "unsupported_enforcement_action:{:?}",
+                response.action
+            ));
+        }
+
+        if Path::new(CONTAINMENT_DISABLE_PATH).exists() {
+            return Some("containment_disabled_by_local_switch".to_string());
+        }
+
+        let pid = response.pid;
+        let self_pid = unsafe { GetCurrentProcessId() };
+        if pid <= 4 || pid == self_pid {
+            return Some(format!("refused_protected_pid:{pid}"));
+        }
+
+        if contained_pids.contains(&pid) {
+            return Some(format!("already_contained:{pid}"));
+        }
+
+        unsafe {
+            let process = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return Some(format!(
+                    "terminate_open_failed:{pid}:{}",
+                    io::Error::last_os_error()
+                ));
+            }
+
+            let result = TerminateProcess(process, 0x4E58);
+            let error = if result == 0 {
+                Some(io::Error::last_os_error())
+            } else {
+                None
+            };
+            let _ = CloseHandle(process);
+
+            if let Some(error) = error {
+                return Some(format!("terminate_failed:{pid}:{error}"));
+            }
+        }
+
+        contained_pids.insert(pid);
+        Some(format!("terminated_process:{pid}"))
+    }
+
     fn emit_file_activity(
         activity: EtwFileActivity,
         policy: Option<&PolicyBundle>,
         ransomware_tracker: &mut RansomwareTracker,
+        contained_pids: &mut HashSet<u32>,
         now_ms: u64,
     ) -> io::Result<()> {
         let renamed = activity.kind == FileActivityKind::Rename;
@@ -347,6 +415,8 @@ mod service {
                     plan_ransomware_response(policy, activity.pid, &features, &assessment)
                 })
         });
+        let containment =
+            execute_ransomware_response(ransomware_response.as_ref(), contained_pids);
 
         let now = OffsetDateTime::now_utc();
         let timestamp = now
@@ -379,6 +449,7 @@ mod service {
             policy,
             Some(&assessment),
             ransomware_response.as_ref(),
+            containment.as_deref(),
         )
     }
 
@@ -402,7 +473,7 @@ mod service {
             destination_host: None,
         };
 
-        append_json_line(&event, policy, None, None)
+        append_json_line(&event, policy, None, None, None)
     }
 
     fn append_json_line(
@@ -410,6 +481,7 @@ mod service {
         policy: Option<&PolicyBundle>,
         ransomware: Option<&RansomwareAssessment>,
         ransomware_response: Option<&RansomwareResponseDecision>,
+        containment: Option<&str>,
     ) -> io::Result<()> {
         let path = Path::new(EVENT_LOG_PATH);
         if let Some(parent) = path.parent() {
@@ -425,7 +497,8 @@ mod service {
                 "would_deny": decision.would_deny,
                 "enforcement": "shadow",
                 "ransomware": ransomware,
-                "ransomware_response": ransomware_response
+                "ransomware_response": ransomware_response,
+                "containment": containment
             })
         } else {
             serde_json::json!({
@@ -435,7 +508,8 @@ mod service {
                 "would_deny": false,
                 "enforcement": "telemetry_only",
                 "ransomware": ransomware,
-                "ransomware_response": ransomware_response
+                "ransomware_response": ransomware_response,
+                "containment": containment
             })
         };
         serde_json::to_writer(&mut file, &record)?;
