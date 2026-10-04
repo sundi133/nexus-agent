@@ -21,7 +21,6 @@ final class ContentFilterManager: ObservableObject {
 
                 let configuration = NEFilterProviderConfiguration()
                 configuration.filterSockets = true
-                configuration.filterBrowsers = true
 
                 let host = self.testBlockedHost
                     .trimmingCharacters(in: .whitespacesAndNewlines)
