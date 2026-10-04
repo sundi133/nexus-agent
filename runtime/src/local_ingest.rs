@@ -90,8 +90,12 @@ fn handle_connection(
         return write_response(&mut stream, 404, "not found");
     }
 
-    let expected = format!("Bearer {token}");
-    if authorization.as_deref() != Some(expected.as_str()) {
+    let supplied_token = authorization
+        .as_deref()
+        .and_then(|value| value.strip_prefix("Bearer "));
+    if !supplied_token.is_some_and(|supplied| {
+        constant_time_eq(supplied.as_bytes(), token.as_bytes())
+    }) {
         return write_response(&mut stream, 401, "unauthorized");
     }
 
@@ -118,6 +122,17 @@ fn handle_connection(
     }
 
     write_response(&mut stream, 202, "accepted")
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut difference = 0u8;
+    for (a, b) in left.iter().zip(right.iter()) {
+        difference |= a ^ b;
+    }
+    difference == 0
 }
 
 fn write_response(stream: &mut TcpStream, status: u16, message: &str) -> io::Result<()> {
@@ -165,6 +180,13 @@ mod tests {
             "risk_tags": ["filesystem_read"]
         })
         .to_string()
+    }
+
+    #[test]
+    fn token_comparison_requires_exact_value() {
+        assert!(constant_time_eq(b"abcdef", b"abcdef"));
+        assert!(!constant_time_eq(b"abcdef", b"abcdeg"));
+        assert!(!constant_time_eq(b"abcdef", b"abc"));
     }
 
     #[test]
