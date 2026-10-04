@@ -202,6 +202,7 @@ mod tests {
                 executable_paths: executables.into_iter().map(str::to_string).collect(),
                 destination_hosts: destinations.into_iter().map(str::to_string).collect(),
             }],
+            ransomware_response: None,
         }
     }
 
