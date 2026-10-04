@@ -87,6 +87,76 @@ impl AgentHealth {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum AgentActionKind {
+    McpToolCall,
+    McpResourceRead,
+    AgentCommand,
+    BrowserAction,
+    NetworkRequest,
+    FileOperation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActionEvent {
+    pub event_id: String,
+    pub timestamp: String,
+    pub device_id: String,
+    pub pid: Option<u32>,
+    pub agent_id: Option<String>,
+    pub session_id: Option<String>,
+    pub kind: AgentActionKind,
+    pub mcp_server: Option<String>,
+    pub tool_name: Option<String>,
+    pub operation: String,
+    pub resource: Option<String>,
+    #[serde(default)]
+    pub risk_tags: Vec<String>,
+}
+
+impl AgentActionEvent {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.event_id.is_empty()
+            || self.event_id.len() > 128
+            || self.timestamp.is_empty()
+            || self.timestamp.len() > 64
+            || self.device_id.is_empty()
+            || self.device_id.len() > 256
+            || self.operation.is_empty()
+            || self.operation.len() > 256
+        {
+            return Err("required agent-action fields are missing or oversized");
+        }
+
+        for value in [
+            self.agent_id.as_deref(),
+            self.session_id.as_deref(),
+            self.mcp_server.as_deref(),
+            self.tool_name.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if value.is_empty() || value.len() > 256 {
+                return Err("agent-action identifier is empty or oversized");
+            }
+        }
+
+        if self.resource.as_ref().is_some_and(|value| value.len() > 2048)
+            || self.risk_tags.len() > 32
+            || self
+                .risk_tags
+                .iter()
+                .any(|value| value.is_empty() || value.len() > 64)
+        {
+            return Err("agent-action resource or risk tags are oversized");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnforcementMode {
     Audit,
     Enforce,
@@ -888,6 +958,25 @@ mod tests {
         assert!(guard.accept(20));
         assert!(guard.accept(21));
         assert_eq!(guard.highest_accepted(), Some(21));
+    }
+
+    #[test]
+    fn agent_action_validation_rejects_oversized_resource() {
+        let event = AgentActionEvent {
+            event_id: "agent-event-1".into(),
+            timestamp: "2026-10-04T00:00:00Z".into(),
+            device_id: "device".into(),
+            pid: Some(7),
+            agent_id: Some("agent-a".into()),
+            session_id: None,
+            kind: AgentActionKind::McpToolCall,
+            mcp_server: Some("filesystem".into()),
+            tool_name: Some("read_file".into()),
+            operation: "read".into(),
+            resource: Some("x".repeat(2049)),
+            risk_tags: vec![],
+        };
+        assert!(event.validate().is_err());
     }
 
     #[test]
