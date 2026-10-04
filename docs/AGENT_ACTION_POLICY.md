@@ -100,3 +100,31 @@ A producer that wants blocking must call the bridge **before** invoking the sens
 6. Treat transport/unavailable errors according to that producer's explicit fail-open/fail-closed policy. Nexus itself does not pretend an unavailable bridge made a deny decision.
 
 The producer must not submit raw prompts, secrets, full tool arguments, or file contents by default. Send the minimum normalized metadata needed for policy matching.
+
+
+## Credential-bound agent identity
+
+For production agent-ID policy, configure one token per local producer instead of the legacy shared token:
+
+```json
+{
+  "local_ingest_port": 8765,
+  "local_ingest_token_file": null,
+  "local_ingest_producers": [
+    {
+      "agent_id": "coding-agent",
+      "token_file": "/var/lib/votal/nexus/producers/coding-agent.token"
+    },
+    {
+      "agent_id": "browser-agent",
+      "token_file": "/var/lib/votal/nexus/producers/browser-agent.token"
+    }
+  ]
+}
+```
+
+The runtime rejects duplicate configured agent IDs and duplicate token values. After a token authenticates, its configured `agent_id` is authoritative. If a request claims a different `agent_id`, the bridge returns `403` and does not evaluate the action under the spoofed identity.
+
+The older `local_ingest_token_file` mode remains available for compatibility, but it authenticates bridge access only. In that mode the runtime clears any request-supplied `agent_id` before policy evaluation, so rules containing `agent_ids` cannot be satisfied by self-assertion.
+
+Credential binding is stronger than trusting request JSON, but it is not yet OS/process attestation. Protect each producer token with platform ACLs and give it only to the intended runtime/process. A later identity layer should bind producers to OS code-signing/process identity or another local attestation mechanism.
