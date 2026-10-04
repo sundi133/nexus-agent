@@ -111,6 +111,51 @@ pub struct PolicyRule {
     pub destination_hosts: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseMode {
+    Disabled,
+    Shadow,
+    Enforce,
+}
+
+impl Default for ResponseMode {
+    fn default() -> Self {
+        Self::Disabled
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RansomwareResponseAction {
+    Alert,
+    TerminateProcess,
+    NetworkIsolate,
+    TerminateAndNetworkIsolate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RansomwareResponsePolicy {
+    #[serde(default)]
+    pub mode: ResponseMode,
+    pub action: RansomwareResponseAction,
+    pub min_score: u8,
+    #[serde(default)]
+    pub require_suspicious_process_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RansomwareResponseDecision {
+    pub matched: bool,
+    pub mode: ResponseMode,
+    pub action: RansomwareResponseAction,
+    pub pid: u32,
+    pub score: u8,
+    pub reason: String,
+    pub would_enforce: bool,
+    pub enforce: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignedPolicyEnvelope {
     pub algorithm: String,
@@ -171,6 +216,25 @@ pub fn validate_policy(policy: &PolicyBundle) -> Result<(), PolicyVerificationEr
 
     let mut ids = HashSet::with_capacity(policy.rules.len());
 
+    if let Some(response) = &policy.ransomware_response {
+        if response.min_score > 100 {
+            return Err(PolicyVerificationError::InvalidPolicy);
+        }
+
+        // Destructive response must be high-confidence and require the
+        // independent suspicious-process-context signal.
+        if response.mode == ResponseMode::Enforce
+            && matches!(
+                response.action,
+                RansomwareResponseAction::TerminateProcess
+                    | RansomwareResponseAction::TerminateAndNetworkIsolate
+            )
+            && (response.min_score < 90 || !response.require_suspicious_process_context)
+        {
+            return Err(PolicyVerificationError::InvalidPolicy);
+        }
+    }
+
     for rule in &policy.rules {
         if rule.id.is_empty()
             || rule.id.len() > 128
@@ -202,6 +266,8 @@ pub struct PolicyBundle {
     pub mode: EnforcementMode,
     #[serde(default)]
     pub rules: Vec<PolicyRule>,
+    #[serde(default)]
+    pub ransomware_response: Option<RansomwareResponsePolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +546,48 @@ impl RansomwareTracker {
     }
 }
 
+pub fn plan_ransomware_response(
+    policy: &PolicyBundle,
+    pid: u32,
+    features: &RansomwareFeatures,
+    assessment: &RansomwareAssessment,
+) -> Option<RansomwareResponseDecision> {
+    let response = policy.ransomware_response.as_ref()?;
+
+    if response.mode == ResponseMode::Disabled {
+        return None;
+    }
+
+    let score_matches = assessment.score >= response.min_score;
+    let context_matches =
+        !response.require_suspicious_process_context || features.suspicious_process_context;
+    let matched = score_matches && context_matches;
+    let would_enforce = matched
+        && matches!(response.mode, ResponseMode::Shadow | ResponseMode::Enforce)
+        && response.action != RansomwareResponseAction::Alert;
+    let enforce = would_enforce && response.mode == ResponseMode::Enforce;
+
+    Some(RansomwareResponseDecision {
+        matched,
+        mode: response.mode,
+        action: response.action,
+        pid,
+        score: assessment.score,
+        reason: if !score_matches {
+            format!(
+                "score {} below configured threshold {}",
+                assessment.score, response.min_score
+            )
+        } else if !context_matches {
+            "suspicious process context is required but absent".to_string()
+        } else {
+            "ransomware response threshold matched".to_string()
+        },
+        would_enforce,
+        enforce,
+    })
+}
+
 #[derive(Debug)]
 pub struct BoundedEventQueue<T> {
     capacity: usize,
@@ -603,6 +711,7 @@ mod tests {
                 executable_paths: vec!["/tmp/test-malware".into()],
                 destination_hosts: vec![],
             }],
+            ransomware_response: None,
         }
     }
 
@@ -628,6 +737,7 @@ mod tests {
                 executable_paths: vec![],
                 destination_hosts: vec![],
             }],
+            ransomware_response: None,
         };
         assert_eq!(
             validate_policy(&policy),
@@ -715,6 +825,7 @@ mod tests {
                 executable_paths: vec!["/opt/test-client".into()],
                 destination_hosts: vec!["blocked.example".into()],
             }],
+            ransomware_response: None,
         };
 
         let mut event = event();
@@ -741,6 +852,7 @@ mod tests {
                 executable_paths: vec![],
                 destination_hosts: vec![],
             }],
+            ransomware_response: None,
         };
         assert_eq!(policy.evaluate(&event()).action, DecisionAction::Allow);
     }
@@ -757,6 +869,7 @@ mod tests {
                 executable_paths: vec![],
                 destination_hosts: vec!["bad.example".into()],
             }],
+            ransomware_response: None,
         };
         let mut event = event();
         event.destination_host = Some("BAD.EXAMPLE".into());
@@ -845,6 +958,80 @@ mod tests {
         tracker.observe(2, 2, false);
         tracker.observe(3, 3, false);
         assert_eq!(tracker.tracked_processes(), 2);
+    }
+
+    #[test]
+    fn destructive_response_policy_requires_high_confidence_guardrails() {
+        let policy = PolicyBundle {
+            version: 1,
+            mode: EnforcementMode::Enforce,
+            rules: vec![],
+            ransomware_response: Some(RansomwareResponsePolicy {
+                mode: ResponseMode::Enforce,
+                action: RansomwareResponseAction::TerminateProcess,
+                min_score: 70,
+                require_suspicious_process_context: false,
+            }),
+        };
+
+        assert_eq!(
+            validate_policy(&policy),
+            Err(PolicyVerificationError::InvalidPolicy)
+        );
+    }
+
+    #[test]
+    fn shadow_response_reports_would_enforce_without_enforcing() {
+        let policy = PolicyBundle {
+            version: 1,
+            mode: EnforcementMode::Enforce,
+            rules: vec![],
+            ransomware_response: Some(RansomwareResponsePolicy {
+                mode: ResponseMode::Shadow,
+                action: RansomwareResponseAction::TerminateProcess,
+                min_score: 90,
+                require_suspicious_process_context: true,
+            }),
+        };
+        let features = RansomwareFeatures {
+            unique_paths_modified: 100,
+            rename_count: 50,
+            suspicious_process_context: true,
+        };
+        let assessment = assess_ransomware(&features);
+        let decision =
+            plan_ransomware_response(&policy, 4242, &features, &assessment).unwrap();
+
+        assert!(decision.matched);
+        assert!(decision.would_enforce);
+        assert!(!decision.enforce);
+        assert_eq!(decision.pid, 4242);
+    }
+
+    #[test]
+    fn enforce_response_requires_configured_context_signal() {
+        let policy = PolicyBundle {
+            version: 1,
+            mode: EnforcementMode::Enforce,
+            rules: vec![],
+            ransomware_response: Some(RansomwareResponsePolicy {
+                mode: ResponseMode::Enforce,
+                action: RansomwareResponseAction::TerminateProcess,
+                min_score: 90,
+                require_suspicious_process_context: true,
+            }),
+        };
+        let features = RansomwareFeatures {
+            unique_paths_modified: 100,
+            rename_count: 50,
+            suspicious_process_context: false,
+        };
+        let assessment = assess_ransomware(&features);
+        let decision =
+            plan_ransomware_response(&policy, 99, &features, &assessment).unwrap();
+
+        assert!(!decision.matched);
+        assert!(!decision.enforce);
     }
 
     #[test]
