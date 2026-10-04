@@ -164,6 +164,7 @@ mod tests {
                 executable_paths: vec!["/tmp/test".into()],
                 destination_hosts: vec![],
             }],
+            ransomware_response: None,
         };
         let payload = serde_json::to_vec(&policy).unwrap();
         let signed = SignedPolicyEnvelope {
