@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use nexus_agent_core::{AgentHealth, CapabilityState, PolicyBundle};
 use nexus_agent_runtime::{
     spawn_local_ingest, DiskSpool, HttpControlPlane, JsonlTailer, LocalIngestAuth,
-    PolicyStore, ProducerCredential, RuntimeConfig, RuntimeWorker,
+    PolicyStore, ProducerCredential, RuntimeConfig, RuntimeWorker, read_secret_file,
 };
 #[cfg(unix)]
 use nexus_agent_runtime::spawn_local_ingest_unix;
@@ -46,16 +46,8 @@ fn load_public_key(path: &Path) -> Result<[u8; 32], String> {
 }
 
 fn load_local_ingest_token(path: &Path) -> Result<String, String> {
-    let token = fs::read_to_string(path)
-        .map_err(|error| format!("cannot read local ingest token: {error}"))?;
-    let token = token.trim().to_string();
-    if token.len() < 32
-        || token.len() > 512
-        || token.chars().any(|value| value == '\r' || value == '\n')
-    {
-        return Err("local ingest token must be 32-512 non-newline characters".to_string());
-    }
-    Ok(token)
+    read_secret_file(path, 32, 512, true)
+        .map_err(|error| format!("invalid local ingest token file: {error:?}"))
 }
 
 fn load_bound_producers(
