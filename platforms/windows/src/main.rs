@@ -920,10 +920,14 @@ mod service {
         Some(candidate)
     }
 
-    fn load_policy_public_key() -> Option<[u8; 32]> {
-        let encoded = std::fs::read_to_string(POLICY_PUBLIC_KEY_PATH).ok()?;
+    fn decode_policy_public_key(encoded: &str) -> Option<[u8; 32]> {
         let decoded = BASE64.decode(encoded.trim()).ok()?;
         decoded.try_into().ok()
+    }
+
+    fn load_policy_public_key() -> Option<[u8; 32]> {
+        let encoded = std::fs::read_to_string(POLICY_PUBLIC_KEY_PATH).ok()?;
+        decode_policy_public_key(&encoded)
     }
 
     fn load_verified_policy() -> Option<PolicyBundle> {
@@ -1026,6 +1030,14 @@ mod service {
                 }],
                 ransomware_response: None,
             }
+        }
+
+        #[test]
+        fn policy_public_key_decoder_requires_exact_32_bytes() {
+            let valid = BASE64.encode([7u8; 32]);
+            assert_eq!(decode_policy_public_key(&valid), Some([7u8; 32]));
+            assert!(decode_policy_public_key("not-base64").is_none());
+            assert!(decode_policy_public_key(&BASE64.encode([1u8; 31])).is_none());
         }
 
         #[test]
