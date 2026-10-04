@@ -53,3 +53,27 @@ The spool is bounded. If it exceeds its configured maximum, the oldest segments 
 ## Credential handling
 
 The bearer token is read from a file for each request and is never placed in the repository or runtime JSON. Protect that file with platform-native ACLs. Long term, device enrollment should provision a device-bound credential into Keychain/DPAPI/TPM-backed storage rather than leaving a reusable bootstrap secret on disk.
+
+
+## Sidecar executable
+
+The runtime crate now also builds `nexus-agent-runtime`. It is intended to run outside the privileged enforcement callback path.
+
+It:
+
+- tails the platform collector's local `events.jsonl`;
+- appends each complete event to the bounded durable spool before advancing the persisted read offset;
+- ignores incomplete trailing JSONL records until the writer finishes them;
+- reads the platform `health.json` snapshot;
+- fetches and verifies signed policy into the shared policy path;
+- uploads health and spooled telemetry over HTTPS.
+
+Start it with:
+
+```sh
+nexus-agent-runtime /etc/votal/nexus/runtime.json
+```
+
+The policy public-key file contains only the pinned 32-byte Ed25519 public key encoded as base64. Protect the runtime configuration, trust-root file, bearer-token file, and state directory with platform ACLs.
+
+Telemetry ingestion is intentionally at-least-once. A crash between durable spooling and offset checkpointing may replay an event, but it should not lose one. The control plane should deduplicate by `event_id` where appropriate.
