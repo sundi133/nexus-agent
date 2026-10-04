@@ -206,6 +206,51 @@ fn run_runtime_loop(
             );
         }
 
+        let agent_policy_state = active_policy
+            .read()
+            .ok()
+            .and_then(|guard| {
+                guard.as_ref().map(|policy| {
+                    if policy.agent_action_rules.is_empty() {
+                        (
+                            CapabilityState::Unavailable,
+                            format!(
+                                "verified policy version={} has no agent-action rules",
+                                policy.version
+                            ),
+                        )
+                    } else if policy.mode == nexus_agent_core::EnforcementMode::Audit {
+                        (
+                            CapabilityState::Shadow,
+                            format!(
+                                "verified policy version={} has {} agent-action rules in audit mode",
+                                policy.version,
+                                policy.agent_action_rules.len()
+                            ),
+                        )
+                    } else {
+                        (
+                            CapabilityState::Active,
+                            format!(
+                                "verified policy version={} has {} enforceable agent-action rules",
+                                policy.version,
+                                policy.agent_action_rules.len()
+                            ),
+                        )
+                    }
+                })
+            })
+            .unwrap_or((
+                CapabilityState::Unavailable,
+                "no verified agent-action policy loaded".to_string(),
+            ));
+
+        health = health.with_capability(
+            "agent_action_authorization",
+            agent_policy_state.0,
+            agent_policy_state.1,
+        );
+
         health = health.with_capability(
             "managed_runtime_transport",
             if previous_cycle_errors.is_empty() {
