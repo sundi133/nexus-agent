@@ -4,6 +4,7 @@ pub use credentials::read_secret_file;
 pub mod config;
 pub mod http;
 pub mod local_ingest;
+pub mod mcp;
 pub mod policy_store;
 pub mod spool;
 pub mod source;
@@ -25,3 +26,5 @@ pub use local_ingest::spawn_local_ingest_unix;
 pub use local_ingest::spawn_local_ingest_windows_pipe;
 
 pub use action_client::{authorize_action, LocalAuthorizationTarget};
+
+pub use mcp::normalize_mcp_action;
