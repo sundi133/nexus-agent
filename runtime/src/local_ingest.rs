@@ -20,11 +20,11 @@ use windows_sys::Win32::{
         CloseHandle, DuplicateHandle, GetLastError, HANDLE, DUPLICATE_SAME_ACCESS,
         ERROR_PIPE_CONNECTED, INVALID_HANDLE_VALUE,
     },
-    Storage::FileSystem::{ReadFile, WriteFile},
+    Storage::FileSystem::{ReadFile, WriteFile, PIPE_ACCESS_DUPLEX},
     System::{
         Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe,
-            GetNamedPipeClientProcessId, PIPE_ACCESS_DUPLEX, PIPE_READMODE_BYTE,
+            GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
             PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
         },
         Threading::{
