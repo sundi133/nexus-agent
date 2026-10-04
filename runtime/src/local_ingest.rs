@@ -273,6 +273,7 @@ mod tests {
                 id: "deny-etc-write".into(),
                 action: DecisionAction::Deny,
                 kinds: vec![AgentActionKind::McpToolCall],
+                agent_ids: vec!["agent-1".into()],
                 mcp_servers: vec!["filesystem".into()],
                 tool_names: vec!["write_file".into()],
                 operations: vec!["write".into()],
