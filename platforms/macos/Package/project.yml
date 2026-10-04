@@ -27,7 +27,10 @@ targets:
         CODE_SIGN_STYLE: Automatic
     dependencies:
       - target: NexusEndpointExtension
+      - target: NexusFilterDataExtension
+      - target: NexusFilterControlExtension
       - sdk: SystemExtensions.framework
+      - sdk: NetworkExtension.framework
 
   NexusEndpointExtension:
     type: system-extension
@@ -55,3 +58,40 @@ targets:
         basedOnDependencyAnalysis: false
     dependencies:
       - sdk: libEndpointSecurity.tbd
+
+
+  NexusFilterDataExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: FilterData/Sources
+    info:
+      path: FilterData/Info.plist
+    entitlements:
+      path: FilterData/NexusFilterData.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent.filter-data
+        PRODUCT_NAME: NexusFilterDataExtension
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - sdk: NetworkExtension.framework
+
+  NexusFilterControlExtension:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: FilterControl/Sources
+    info:
+      path: FilterControl/Info.plist
+    entitlements:
+      path: FilterControl/NexusFilterControl.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent.filter-control
+        PRODUCT_NAME: NexusFilterControlExtension
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - sdk: NetworkExtension.framework
