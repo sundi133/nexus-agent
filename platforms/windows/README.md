@@ -10,6 +10,8 @@ This milestone establishes the Windows service lifecycle and normalized process 
 - Attempts to resolve a full executable path with `PROCESS_QUERY_LIMITED_INFORMATION`.
 - Writes JSON Lines to `C:\ProgramData\Votal\Nexus\events.jsonl`.
 - Stops cleanly when the SCM sends a stop control.
+- Loads `C:\\ProgramData\\Votal\\Nexus\\policy.signed.json` only when the pinned Ed25519 public key is configured.
+- Evaluates process-start events with the shared Rust policy core and records `would_deny` in **shadow** mode.
 
 ## Important limitation
 
@@ -45,7 +47,7 @@ sc.exe delete VotalNexusAgent
 ## Planned Windows enforcement layers
 
 1. Replace snapshot telemetry with ETW process/image telemetry.
-2. Add policy loading and Ed25519 verification through the shared core.
+2. Replace the development zero trust-root placeholder with the production Ed25519 public key and add last-known-good policy reload.
 3. Add WFP callout/management components for network enforcement.
 4. Add a signed kernel component only for controls that genuinely require kernel interception.
 5. Add tamper protection, health reporting, staged enforcement, rollback, and signed installer packaging.
