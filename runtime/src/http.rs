@@ -12,7 +12,6 @@ use std::{
 use thiserror::Error;
 
 const MAX_POLICY_BYTES: u64 = 1024 * 1024;
-const MAX_RESPONSE_BODY_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug)]
 pub enum PolicyFetch {
