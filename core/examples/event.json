@@ -1,0 +1,11 @@
+{
+  "event_id": "demo-event-001",
+  "timestamp": "2026-10-03T12:00:00Z",
+  "device_id": "demo-device",
+  "kind": "process_exec",
+  "pid": 4242,
+  "parent_pid": 1,
+  "executable_path": "/tmp/suspicious-demo",
+  "target_path": null,
+  "destination_host": null
+}
