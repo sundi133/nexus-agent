@@ -33,6 +33,8 @@ pub enum PolicyStoreError {
     Verification(PolicyVerificationError),
     #[error("policy downgrade rejected: current={current}, candidate={candidate}")]
     Downgrade { current: u64, candidate: u64 },
+    #[error("policy version conflict: version={version} already exists with different signed content")]
+    VersionConflict { version: u64 },
     #[error("policy state I/O failed: {0}")]
     Io(#[from] io::Error),
 }
@@ -71,6 +73,24 @@ impl PolicyStore {
                 current: current.unwrap_or_default(),
                 candidate: policy.version,
             });
+        }
+
+        if current == Some(policy.version) {
+            match fs::read(&self.signed_path) {
+                Ok(existing) if existing == envelope_bytes => {
+                    return Ok(ActivatedPolicy {
+                        policy,
+                        signed_path: self.signed_path.clone(),
+                    });
+                }
+                Ok(_) => {
+                    return Err(PolicyStoreError::VersionConflict {
+                        version: policy.version,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
         }
 
         atomic_write(&self.signed_path, envelope_bytes)?;
@@ -174,6 +194,60 @@ mod tests {
             signature_b64: BASE64.encode(signing_key.sign(&payload).to_bytes()),
         };
         serde_json::to_vec(&signed).unwrap()
+    }
+
+    #[test]
+    fn identical_same_version_activation_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let signing_key = SigningKey::from_bytes(&[12u8; 32]);
+        let store = PolicyStore::new(
+            dir.path().join("policy.signed.json"),
+            dir.path().join("policy.version"),
+            *signing_key.verifying_key().as_bytes(),
+        );
+
+        let signed = envelope(&signing_key, 10);
+        store.activate(&signed).unwrap();
+        let active = store.activate(&signed).unwrap();
+        assert_eq!(active.policy.version, 10);
+    }
+
+    #[test]
+    fn different_content_cannot_reuse_same_version() {
+        let dir = tempdir().unwrap();
+        let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+        let store = PolicyStore::new(
+            dir.path().join("policy.signed.json"),
+            dir.path().join("policy.version"),
+            *signing_key.verifying_key().as_bytes(),
+        );
+
+        let first = envelope(&signing_key, 10);
+        store.activate(&first).unwrap();
+
+        let policy = PolicyBundle {
+            version: 10,
+            mode: EnforcementMode::Enforce,
+            rules: vec![PolicyRule {
+                id: "changed".into(),
+                category: "test".into(),
+                action: DecisionAction::Deny,
+                executable_paths: vec!["/tmp/changed".into()],
+                destination_hosts: vec![],
+            }],
+            ransomware_response: None,
+        };
+        let payload = serde_json::to_vec(&policy).unwrap();
+        let changed = SignedPolicyEnvelope {
+            algorithm: "Ed25519".into(),
+            key_id: "test-key".into(),
+            payload_b64: BASE64.encode(&payload),
+            signature_b64: BASE64.encode(signing_key.sign(&payload).to_bytes()),
+        };
+        let changed_bytes = serde_json::to_vec(&changed).unwrap();
+
+        let err = store.activate(&changed_bytes).unwrap_err();
+        assert!(matches!(err, PolicyStoreError::VersionConflict { version: 10 }));
     }
 
     #[test]
