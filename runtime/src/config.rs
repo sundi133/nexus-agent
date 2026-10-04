@@ -7,6 +7,7 @@ const DEFAULT_CONNECT_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const DEFAULT_SPOOL_MAX_BYTES: u64 = 64 * 1024 * 1024;
 const DEFAULT_SEGMENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const DEFAULT_CYCLE_INTERVAL_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeConfig {
@@ -14,6 +15,12 @@ pub struct RuntimeConfig {
     pub spool_dir: PathBuf,
     pub policy_signed_path: PathBuf,
     pub policy_watermark_path: PathBuf,
+    pub policy_public_key_file: PathBuf,
+    pub event_source_path: PathBuf,
+    pub event_offset_path: PathBuf,
+    pub health_source_path: PathBuf,
+    #[serde(default = "default_cycle_interval_ms")]
+    pub cycle_interval_ms: u64,
     #[serde(default = "default_spool_max_bytes")]
     pub spool_max_bytes: u64,
     #[serde(default = "default_segment_max_bytes")]
@@ -52,6 +59,7 @@ impl RuntimeConfig {
         if self.segment_max_bytes == 0
             || self.spool_max_bytes == 0
             || self.segment_max_bytes > self.spool_max_bytes
+            || self.cycle_interval_ms == 0
         {
             return Err(ConfigError::InvalidSpoolLimits);
         }
@@ -116,6 +124,11 @@ mod tests {
             spool_dir: "spool".into(),
             policy_signed_path: "policy.signed.json".into(),
             policy_watermark_path: "policy.version".into(),
+            policy_public_key_file: "policy-public-key.b64".into(),
+            event_source_path: "events.jsonl".into(),
+            event_offset_path: "events.offset".into(),
+            health_source_path: "health.json".into(),
+            cycle_interval_ms: 1000,
             spool_max_bytes: 1024,
             segment_max_bytes: 256,
         }
@@ -147,4 +160,8 @@ mod tests {
         cfg.segment_max_bytes = 2048;
         assert_eq!(cfg.validate(), Err(ConfigError::InvalidSpoolLimits));
     }
+}
+
+fn default_cycle_interval_ms() -> u64 {
+    DEFAULT_CYCLE_INTERVAL_MS
 }
