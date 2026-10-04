@@ -107,9 +107,11 @@ impl RuntimeConfig {
                 }
             (None, true, false, None, producers) if !producers.is_empty() => {
                 validate_local_producers(producers)?;
+                require_peer_constraints(producers)?;
             }
             (None, false, true, None, producers) if !producers.is_empty() => {
                 validate_local_producers(producers)?;
+                require_peer_constraints(producers)?;
             }
             _ => return Err(ConfigError::InvalidLocalIngest),
         }
@@ -141,6 +143,18 @@ fn validate_local_producers(
         }
     }
 
+    Ok(())
+}
+
+fn require_peer_constraints(
+    producers: &[LocalProducerConfig],
+) -> Result<(), ConfigError> {
+    if producers
+        .iter()
+        .any(|producer| producer.expected_uid.is_none() && producer.executable_paths.is_empty())
+    {
+        return Err(ConfigError::InvalidLocalIngest);
+    }
     Ok(())
 }
 
@@ -286,6 +300,19 @@ mod tests {
         assert!(cfg.validate().is_ok());
 
         cfg.local_ingest_port = Some(8765);
+        assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
+    }
+
+    #[test]
+    fn attested_transport_requires_peer_constraint() {
+        let mut cfg = config();
+        cfg.local_ingest_socket_path = Some("/run/votal/nexus/agent-actions.sock".into());
+        cfg.local_ingest_producers = vec![LocalProducerConfig {
+            agent_id: "agent-a".into(),
+            token_file: "agent-a.token".into(),
+            expected_uid: None,
+            executable_paths: vec![],
+        }];
         assert_eq!(cfg.validate(), Err(ConfigError::InvalidLocalIngest));
     }
 
