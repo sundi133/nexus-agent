@@ -205,7 +205,7 @@ An attested producer can optionally pin one or more SHA-256 digests in addition 
 
 When `executable_sha256` is configured, at least one configured digest must match. Digests must be exactly 64 hexadecimal characters.
 
-On Linux, Nexus hashes `/proc/<peer-pid>/exe`, which follows the executable image of the running peer process rather than merely reopening the configured pathname. On Windows, Nexus hashes the executable resolved from the named-pipe client PID. On macOS, executable hashing is unavailable until peer PID/process identity is added, so a macOS producer configured with a hash pin will fail authentication instead of silently skipping the check.
+On Linux, Nexus hashes `/proc/<peer-pid>/exe`, which follows the executable image of the running peer process rather than merely reopening the configured pathname. On Windows, Nexus hashes the executable resolved from the named-pipe client PID. On macOS, Nexus hashes the executable path resolved from the kernel-derived peer PID.
 
 The verified digest is included in the producer-attestation audit record.
 
