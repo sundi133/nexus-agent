@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/endpoint-event-v1.json",
+  "title": "Votal Normalized Endpoint Event",
+  "type": "object",
+  "required": ["event_id", "timestamp", "device_id", "kind"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "timestamp": {"type": "string", "format": "date-time"},
+    "device_id": {"type": "string", "minLength": 1},
+    "kind": {
+      "type": "string",
+      "enum": ["process_exec", "process_fork", "process_exit", "file_open", "file_write", "file_rename", "file_delete", "file_create", "volume_mount", "network_flow"]
+    },
+    "pid": {"type": ["integer", "null"], "minimum": 0},
+    "parent_pid": {"type": ["integer", "null"], "minimum": 0},
+    "executable_path": {"type": ["string", "null"]},
+    "target_path": {"type": ["string", "null"]},
+    "destination_host": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

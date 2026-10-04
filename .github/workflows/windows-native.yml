@@ -1,0 +1,39 @@
+name: windows-native-build
+
+on:
+  push:
+    paths:
+      - "platforms/windows/**"
+      - "core/**"
+      - ".github/workflows/windows-native.yml"
+  pull_request:
+    paths:
+      - "platforms/windows/**"
+      - "core/**"
+      - ".github/workflows/windows-native.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Test Windows adapter
+        run: cargo test --manifest-path platforms/windows/Cargo.toml
+      - name: Build Windows adapter
+        run: cargo build --release --manifest-path platforms/windows/Cargo.toml
+      - name: Compile WFP control utility
+        shell: cmd
+        run: cl /nologo /W4 /WX /DUNICODE /D_UNICODE platforms\windows\native\wfp_control.c /Fe:platforms\windows\native\wfp_control.exe fwpuclnt.lib ws2_32.lib rpcrt4.lib
+      - name: Parse installer PowerShell scripts
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "platforms/windows/installer/Install-NexusAgent.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path "platforms/windows/installer/Uninstall-NexusAgent.ps1"), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }

@@ -1,0 +1,78 @@
+name: NexusAgent
+
+options:
+  bundleIdPrefix: ai.votal.nexus
+  deploymentTarget:
+    macOS: "13.0"
+
+settings:
+  base:
+    MACOSX_DEPLOYMENT_TARGET: "13.0"
+
+targets:
+  NexusAgent:
+    type: application
+    platform: macOS
+    sources:
+      - path: HostApp/Sources
+    info:
+      path: HostApp/Info.plist
+    entitlements:
+      path: HostApp/NexusAgent.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent
+        PRODUCT_NAME: Nexus Agent
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - target: NexusEndpointExtension
+      - target: NexusFilterDataExtension
+      - sdk: SystemExtensions.framework
+      - sdk: NetworkExtension.framework
+
+  NexusEndpointExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: SystemExtension/Sources
+    info:
+      path: SystemExtension/Info.plist
+    entitlements:
+      path: SystemExtension/NexusEndpointExtension.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent.endpoint
+        PRODUCT_NAME: ai.votal.nexus.agent.endpoint
+        CODE_SIGN_STYLE: Automatic
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../../../core/include"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/Generated"
+        OTHER_LDFLAGS:
+          - "-lnexus_agent_core"
+    preBuildScripts:
+      - name: Build shared Rust policy core
+        script: '"${SRCROOT}/../scripts/build_core_universal.sh"'
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - sdk: libEndpointSecurity.tbd
+
+
+  NexusFilterDataExtension:
+    type: system-extension
+    platform: macOS
+    sources:
+      - path: FilterData/Sources
+    info:
+      path: FilterData/Info.plist
+    entitlements:
+      path: FilterData/NexusFilterData.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent.filter-data
+        PRODUCT_NAME: ai.votal.nexus.agent.filter-data
+        SWIFT_VERSION: "5.0"
+        CODE_SIGN_STYLE: Automatic
+    dependencies:
+      - sdk: NetworkExtension.framework

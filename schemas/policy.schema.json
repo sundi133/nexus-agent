@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/endpoint-policy-v1.json",
+  "title": "Votal Endpoint Policy Bundle",
+  "type": "object",
+  "required": [
+    "version",
+    "mode",
+    "rules"
+  ],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "audit",
+        "enforce"
+      ]
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "category",
+          "action"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny",
+              "alert"
+            ]
+          },
+          "executable_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "destination_hosts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "ransomware_response": {
+      "type": "object",
+      "required": [
+        "mode",
+        "action",
+        "min_score",
+        "require_suspicious_process_context"
+      ],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "disabled",
+            "shadow",
+            "enforce"
+          ]
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "alert",
+            "terminate_process",
+            "network_isolate",
+            "terminate_and_network_isolate"
+          ]
+        },
+        "min_score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "require_suspicious_process_context": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "agent_action_rules": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "action"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "action": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny",
+              "alert"
+            ]
+          },
+          "kinds": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "enum": [
+                "mcp_tool_call",
+                "mcp_resource_read",
+                "agent_command",
+                "browser_action",
+                "network_request",
+                "file_operation"
+              ]
+            }
+          },
+          "mcp_servers": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "tool_names": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "operations": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          },
+          "resource_prefixes": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          "risk_tags": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            }
+          },
+          "agent_ids": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            }
+          }
+        },
+        "additionalProperties": false,
+        "anyOf": [
+          {
+            "required": [
+              "kinds"
+            ]
+          },
+          {
+            "required": [
+              "agent_ids"
+            ]
+          },
+          {
+            "required": [
+              "mcp_servers"
+            ]
+          },
+          {
+            "required": [
+              "tool_names"
+            ]
+          },
+          {
+            "required": [
+              "operations"
+            ]
+          },
+          {
+            "required": [
+              "resource_prefixes"
+            ]
+          },
+          {
+            "required": [
+              "risk_tags"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

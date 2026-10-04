@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/endpoint-runtime-config-v1.json",
+  "title": "Votal Nexus Agent Runtime Configuration",
+  "type": "object",
+  "required": [
+    "control_plane",
+    "spool_dir",
+    "policy_signed_path",
+    "policy_watermark_path",
+    "policy_public_key_file",
+    "event_source_path",
+    "event_offset_path",
+    "health_source_path"
+  ],
+  "properties": {
+    "control_plane": {
+      "type": "object",
+      "required": [
+        "policy_url",
+        "health_url",
+        "events_url"
+      ],
+      "properties": {
+        "policy_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "health_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "events_url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "bearer_token_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "connect_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "request_timeout_ms": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "device_credential_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "bearer_token_file"
+          ],
+          "properties": {
+            "bearer_token_file": {
+              "type": "string",
+              "minLength": 1
+            },
+            "device_credential_file": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "required": [
+            "device_credential_file"
+          ],
+          "properties": {
+            "bearer_token_file": {
+              "type": "null"
+            },
+            "device_credential_file": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "spool_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_signed_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_watermark_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "policy_public_key_file": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_source_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "event_offset_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "health_source_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "local_ingest_port": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1024,
+      "maximum": 65535
+    },
+    "local_ingest_token_file": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "cycle_interval_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "spool_max_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "segment_max_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "local_ingest_producers": {
+      "type": "array",
+      "maxItems": 64,
+      "default": [],
+      "items": {
+        "type": "object",
+        "required": [
+          "agent_id",
+          "token_file"
+        ],
+        "properties": {
+          "agent_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "token_file": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_uid": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "executable_paths": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "executable_sha256": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "local_ingest_socket_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "local_ingest_pipe_name": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "maxLength": 240
+    }
+  },
+  "additionalProperties": false
+}

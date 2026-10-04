@@ -1,0 +1,20 @@
+name: macos-native-build
+
+on:
+  push:
+    paths:
+      - "platforms/macos/**"
+      - ".github/workflows/macos-native.yml"
+  pull_request:
+    paths:
+      - "platforms/macos/**"
+      - ".github/workflows/macos-native.yml"
+
+jobs:
+  compile:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Type-check Endpoint Security development harnesses
+        working-directory: platforms/macos
+        run: make syntax package-syntax

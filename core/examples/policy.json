@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "mode": "audit",
+  "rules": [
+    {
+      "id": "example-suspicious-executable",
+      "category": "execution",
+      "action": "deny",
+      "executable_paths": [
+        "/tmp/suspicious-demo"
+      ],
+      "destination_hosts": []
+    },
+    {
+      "id": "example-blocked-host",
+      "category": "network",
+      "action": "deny",
+      "executable_paths": [],
+      "destination_hosts": [
+        "blocked.example.invalid"
+      ]
+    }
+  ],
+  "ransomware_response": {
+    "mode": "shadow",
+    "action": "terminate_process",
+    "min_score": 90,
+    "require_suspicious_process_context": true
+  }
+}

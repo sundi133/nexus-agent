@@ -1,0 +1,26 @@
+{
+  "control_plane": {
+    "policy_url": "https://control.example/v1/endpoint/policy",
+    "health_url": "https://control.example/v1/endpoint/health",
+    "events_url": "https://control.example/v1/endpoint/events",
+    "bearer_token_file": null,
+    "connect_timeout_ms": 5000,
+    "request_timeout_ms": 30000,
+    "device_credential_file": "/var/lib/votal/nexus/device.credential.json"
+  },
+  "spool_dir": "/var/lib/votal/nexus/spool",
+  "policy_signed_path": "/var/lib/votal/nexus/policy.signed.json",
+  "policy_watermark_path": "/var/lib/votal/nexus/policy.version",
+  "policy_public_key_file": "/etc/votal/nexus/policy-public-key.b64",
+  "event_source_path": "/var/lib/votal/nexus/events.jsonl",
+  "event_offset_path": "/var/lib/votal/nexus/events.offset",
+  "health_source_path": "/var/lib/votal/nexus/health.json",
+  "local_ingest_port": null,
+  "local_ingest_token_file": null,
+  "cycle_interval_ms": 5000,
+  "spool_max_bytes": 67108864,
+  "segment_max_bytes": 4194304,
+  "local_ingest_producers": [],
+  "local_ingest_socket_path": null,
+  "local_ingest_pipe_name": null
+}
