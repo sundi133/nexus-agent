@@ -72,7 +72,10 @@ final class FilterDataProvider: NEFilterDataProvider {
             return
         }
 
-        let hosts = defaults.stringArray(forKey: blockedHostsKey) ?? []
+        let persisted = defaults.stringArray(forKey: blockedHostsKey) ?? []
+        let configured =
+            filterConfiguration.vendorConfiguration?["blockedHosts"] as? [String] ?? []
+        let hosts = configured + persisted
         blockedHosts = Set(
             hosts
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
