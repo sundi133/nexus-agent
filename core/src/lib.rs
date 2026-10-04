@@ -6,6 +6,57 @@ use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum CapabilityState {
+    Active,
+    Shadow,
+    Fallback,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityStatus {
+    pub name: String,
+    pub state: CapabilityState,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentHealth {
+    pub schema_version: u32,
+    pub platform: String,
+    pub policy_version: Option<u64>,
+    pub kill_switch_engaged: bool,
+    pub capabilities: Vec<CapabilityStatus>,
+}
+
+impl AgentHealth {
+    pub fn new(platform: impl Into<String>, policy_version: Option<u64>) -> Self {
+        Self {
+            schema_version: 1,
+            platform: platform.into(),
+            policy_version,
+            kill_switch_engaged: false,
+            capabilities: Vec::new(),
+        }
+    }
+
+    pub fn with_capability(
+        mut self,
+        name: impl Into<String>,
+        state: CapabilityState,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.capabilities.push(CapabilityStatus {
+            name: name.into(),
+            state,
+            detail: detail.into(),
+        });
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnforcementMode {
     Audit,
     Enforce,
@@ -500,6 +551,18 @@ mod tests {
         let mut event = event();
         event.destination_host = Some("BAD.EXAMPLE".into());
         assert_eq!(policy.evaluate(&event).action, DecisionAction::Deny);
+    }
+
+    #[test]
+    fn health_contract_records_capability_state() {
+        let health = AgentHealth::new("test", Some(9)).with_capability(
+            "process_telemetry",
+            CapabilityState::Active,
+            "native",
+        );
+        assert_eq!(health.schema_version, 1);
+        assert_eq!(health.policy_version, Some(9));
+        assert_eq!(health.capabilities[0].state, CapabilityState::Active);
     }
 
     #[test]
