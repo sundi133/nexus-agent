@@ -25,6 +25,6 @@ pub use local_ingest::spawn_local_ingest_unix;
 #[cfg(windows)]
 pub use local_ingest::spawn_local_ingest_windows_pipe;
 
-pub use action_client::{authorize_action, LocalAuthorizationTarget};
+pub use action_client::{authorize_action, AgentActionClient, LocalAuthorizationTarget};
 
 pub use mcp::normalize_mcp_action;
