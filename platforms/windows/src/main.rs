@@ -48,6 +48,7 @@ mod service {
     const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
     const EVENT_LOG_PATH: &str = r"C:\ProgramData\Votal\Nexus\events.jsonl";
     const POLICY_PATH: &str = r"C:\ProgramData\Votal\Nexus\policy.signed.json";
+    const POLICY_VERSION_PATH: &str = r"C:\ProgramData\Votal\Nexus\policy.version";
     const HEALTH_PATH: &str = r"C:\ProgramData\Votal\Nexus\health.json";
     // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
     const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
@@ -313,7 +314,31 @@ mod service {
 
         let envelope_bytes = std::fs::read(POLICY_PATH).ok()?;
         let envelope: SignedPolicyEnvelope = serde_json::from_slice(&envelope_bytes).ok()?;
-        verify_signed_policy(&envelope, &POLICY_PUBLIC_KEY).ok()
+        let policy = verify_signed_policy(&envelope, &POLICY_PUBLIC_KEY).ok()?;
+        if !accept_policy_version(policy.version) {
+            return None;
+        }
+        Some(policy)
+    }
+
+    fn accept_policy_version(version: u64) -> bool {
+        let previous = std::fs::read_to_string(POLICY_VERSION_PATH)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok());
+
+        if previous.is_some_and(|current| version < current) {
+            return false;
+        }
+
+        let path = Path::new(POLICY_VERSION_PATH);
+        if let Some(parent) = path.parent() {
+            if create_dir_all(parent).is_err() {
+                return false;
+            }
+        }
+
+        let highest = previous.map_or(version, |current| current.max(version));
+        std::fs::write(path, format!("{highest}\n")).is_ok()
     }
 
     fn write_diagnostic(message: &str) -> io::Result<()> {
