@@ -79,6 +79,14 @@ impl DiskSpool {
         self.enforce_limit()
     }
 
+    pub fn seal_current(&mut self) -> Result<(), SpoolError> {
+        let current = self.current_segment_path();
+        if fs::metadata(&current).map(|m| m.len()).unwrap_or(0) > 0 {
+            self.sequence = self.sequence.saturating_add(1);
+        }
+        Ok(())
+    }
+
     pub fn next_segment(&self) -> Result<Option<PathBuf>, SpoolError> {
         let mut segments = self.segments()?;
         segments.sort();
