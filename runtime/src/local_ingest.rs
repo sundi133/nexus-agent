@@ -9,6 +9,7 @@ use std::{
     sync::{
         mpsc::Sender,
         Arc, RwLock,
+        atomic::{AtomicUsize, Ordering},
     },
     thread,
     time::Duration,
@@ -303,6 +304,7 @@ pub fn spawn_local_ingest_windows_pipe(
     let mut wide_name: Vec<u16> = full_name.encode_utf16().collect();
     wide_name.push(0);
 
+    let active_connections = Arc::new(AtomicUsize::new(0));
     Ok(thread::spawn(move || loop {
         let handle = unsafe {
             CreateNamedPipeW(
@@ -334,6 +336,15 @@ pub fn spawn_local_ingest_windows_pipe(
             }
         }
 
+        if active_connections.fetch_add(1, Ordering::AcqRel) >= 64 {
+            active_connections.fetch_sub(1, Ordering::AcqRel);
+            unsafe {
+                let _ = DisconnectNamedPipe(handle);
+                let _ = CloseHandle(handle);
+            }
+            continue;
+        }
+
         let mut client_pid = 0u32;
         let pid_ok = unsafe { GetNamedPipeClientProcessId(handle, &mut client_pid) };
         let executable_path = if pid_ok != 0 && client_pid != 0 {
@@ -351,7 +362,14 @@ pub fn spawn_local_ingest_windows_pipe(
         };
 
         let stream = WindowsPipeStream::new(handle);
-        let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+        let auth = auth.clone();
+        let policy = policy.clone();
+        let sender = sender.clone();
+        let active = active_connections.clone();
+        thread::spawn(move || {
+            let _ = handle_connection(stream, &auth, &policy, &sender, peer);
+            active.fetch_sub(1, Ordering::AcqRel);
+        });
     }))
 }
 
