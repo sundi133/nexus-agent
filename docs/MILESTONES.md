@@ -113,3 +113,13 @@ Status: normalized event model and authenticated localhost ingestion bridge impl
 - no raw prompt or raw tool-argument capture by default
 - accepted actions use the same durable spool/control-plane event path as endpoint telemetry
 - remaining: OS-bound agent identity, signed/local attestation for producers, policy selectors for MCP server/tool/action, and synchronous allow/deny integration with supported agent runtimes
+
+
+## Live policy/control-plane status
+
+- Signed policy versions are immutable: identical same-version envelopes are idempotent; different content reusing a version is rejected.
+- Windows and Linux check the persisted policy watermark and stage native network enforcement before activation.
+- Failed/unsupported native staging retains the last-known-good policy and enforcement state.
+- macOS checks the policy watermark every second and also supports an explicit SIGHUP reload check.
+- The Ed25519 public trust root is provisioned as a protected base64 file by each platform installer; no private signing key is shipped to endpoints.
+- The managed runtime handles HTTPS policy fetch, health upload, and durable at-least-once telemetry spooling outside privileged authorization callbacks.
