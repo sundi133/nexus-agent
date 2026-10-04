@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://votal.ai/schemas/endpoint-runtime-config-v1.json",
+  "title": "Votal Nexus Agent Runtime Configuration",
+  "type": "object",
+  "required": ["control_plane", "spool_dir"],
+  "properties": {
+    "control_plane": {
+      "type": "object",
+      "required": ["policy_url", "health_url", "events_url", "bearer_token_file"],
+      "properties": {
+        "policy_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "health_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "events_url": {"type": "string", "format": "uri", "pattern": "^https://"},
+        "bearer_token_file": {"type": "string", "minLength": 1},
+        "connect_timeout_ms": {"type": "integer", "minimum": 1},
+        "request_timeout_ms": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": false
+    },
+    "spool_dir": {"type": "string", "minLength": 1},
+    "spool_max_bytes": {"type": "integer", "minimum": 1},
+    "segment_max_bytes": {"type": "integer", "minimum": 1}
+  },
+  "additionalProperties": false
+}
