@@ -362,6 +362,7 @@ pub fn spawn_local_ingest_windows_pipe(
             uid: None,
             gid: None,
             executable_path,
+            executable_sha256: None,
             transport: "windows_named_pipe_client_pid",
         };
 
@@ -709,6 +710,7 @@ fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
         uid: Some(credentials.uid),
         gid: Some(credentials.gid),
         executable_path,
+        executable_sha256: None,
         transport: "unix_socket_linux_peercred",
     })
 }
@@ -728,7 +730,7 @@ fn unix_peer_identity(stream: &UnixStream) -> io::Result<PeerIdentity> {
         uid: Some(uid),
         gid: Some(gid),
         executable_path: None,
-executable_sha256: None,
+        executable_sha256: None,
         transport: "unix_socket_peer_eid",
     })
 }
@@ -866,14 +868,14 @@ mod tests {
             token: "b".repeat(32),
             expected_uid: Some(1000),
             executable_paths: vec!["/usr/local/bin/agent-b".into()],
-        executable_sha256: vec![],
+            executable_sha256: vec![],
         }]);
         let peer = PeerIdentity {
             pid: Some(44),
             uid: Some(1000),
             gid: Some(1000),
             executable_path: Some("/usr/local/bin/agent-b".into()),
-executable_sha256: None,
+        executable_sha256: None,
             transport: "unix_socket_linux_peercred",
         };
         let authenticated =
@@ -889,7 +891,7 @@ executable_sha256: None,
 
         let wrong_exe = PeerIdentity {
             executable_path: Some("/tmp/other".into()),
-executable_sha256: None,
+        executable_sha256: None,
             ..peer
         };
         assert!(authenticate_producer(&auth, &"b".repeat(32), &wrong_exe).is_none());
