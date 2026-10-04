@@ -33,7 +33,7 @@ pub trait ControlPlaneTransport {
     ) -> Result<PolicyFetch, TransportError>;
 
     fn post_health(&self, health: &AgentHealth) -> Result<(), TransportError>;
-    fn post_events(&self, jsonl: &[u8]) -> Result<(), TransportError>;
+    fn post_events(&self, batch_id: &str, jsonl: &[u8]) -> Result<(), TransportError>;
 }
 
 #[derive(Debug)]
@@ -125,7 +125,7 @@ impl HttpControlPlane {
         ensure_success(&response)
     }
 
-    fn post_events_impl(&self, jsonl: &[u8]) -> Result<(), TransportError> {
+    fn post_events_impl(&self, batch_id: &str, jsonl: &[u8]) -> Result<(), TransportError> {
         let credential = self.read_credential()?;
         let mut request = self
             .client
@@ -136,6 +136,7 @@ impl HttpControlPlane {
         }
         let response = request
             .header("content-type", "application/x-ndjson")
+            .header("x-nexus-batch-id", batch_id)
             .body(jsonl.to_vec())
             .send()?;
         ensure_success(&response)
@@ -206,7 +207,7 @@ impl ControlPlaneTransport for HttpControlPlane {
         self.post_health_impl(health)
     }
 
-    fn post_events(&self, jsonl: &[u8]) -> Result<(), TransportError> {
-        self.post_events_impl(jsonl)
+    fn post_events(&self, batch_id: &str, jsonl: &[u8]) -> Result<(), TransportError> {
+        self.post_events_impl(batch_id, jsonl)
     }
 }
