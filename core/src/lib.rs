@@ -155,6 +155,33 @@ impl AgentActionEvent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActionRule {
+    pub id: String,
+    pub action: DecisionAction,
+    #[serde(default)]
+    pub kinds: Vec<AgentActionKind>,
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub tool_names: Vec<String>,
+    #[serde(default)]
+    pub operations: Vec<String>,
+    #[serde(default)]
+    pub resource_prefixes: Vec<String>,
+    #[serde(default)]
+    pub risk_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentActionDecision {
+    pub action: DecisionAction,
+    pub rule_id: Option<String>,
+    pub reason: String,
+    pub policy_version: u64,
+    pub would_deny: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnforcementMode {
@@ -327,6 +354,38 @@ pub fn validate_policy(policy: &PolicyBundle) -> Result<(), PolicyVerificationEr
         }
     }
 
+    if policy.agent_action_rules.len() > 512 {
+        return Err(PolicyVerificationError::InvalidPolicy);
+    }
+
+    for rule in &policy.agent_action_rules {
+        let has_selector = !rule.kinds.is_empty()
+            || !rule.mcp_servers.is_empty()
+            || !rule.tool_names.is_empty()
+            || !rule.operations.is_empty()
+            || !rule.resource_prefixes.is_empty()
+            || !rule.risk_tags.is_empty();
+
+        if rule.id.is_empty()
+            || rule.id.len() > 128
+            || !ids.insert(rule.id.as_str())
+            || !has_selector
+            || rule.kinds.len() > 16
+            || rule.mcp_servers.len() > 64
+            || rule.tool_names.len() > 64
+            || rule.operations.len() > 64
+            || rule.resource_prefixes.len() > 64
+            || rule.risk_tags.len() > 64
+            || rule.mcp_servers.iter().any(|value| value.is_empty() || value.len() > 256)
+            || rule.tool_names.iter().any(|value| value.is_empty() || value.len() > 256)
+            || rule.operations.iter().any(|value| value.is_empty() || value.len() > 256)
+            || rule.resource_prefixes.iter().any(|value| value.is_empty() || value.len() > 2048)
+            || rule.risk_tags.iter().any(|value| value.is_empty() || value.len() > 64)
+        {
+            return Err(PolicyVerificationError::InvalidPolicy);
+        }
+    }
+
     Ok(())
 }
 
@@ -336,6 +395,8 @@ pub struct PolicyBundle {
     pub mode: EnforcementMode,
     #[serde(default)]
     pub rules: Vec<PolicyRule>,
+    #[serde(default)]
+    pub agent_action_rules: Vec<AgentActionRule>,
     #[serde(default)]
     pub ransomware_response: Option<RansomwareResponsePolicy>,
 }
@@ -427,6 +488,62 @@ impl PolicyBundle {
             action: DecisionAction::Allow,
             rule_id: None,
             reason: "no matching rule".to_string(),
+            policy_version: self.version,
+            would_deny: false,
+        }
+    }
+
+    pub fn evaluate_agent_action(&self, event: &AgentActionEvent) -> AgentActionDecision {
+        for rule in &self.agent_action_rules {
+            let kind_matches = rule.kinds.is_empty() || rule.kinds.contains(&event.kind);
+            let server_matches = rule.mcp_servers.is_empty()
+                || event.mcp_server.as_ref().is_some_and(|value| {
+                    rule.mcp_servers.iter().any(|candidate| candidate == value)
+                });
+            let tool_matches = rule.tool_names.is_empty()
+                || event.tool_name.as_ref().is_some_and(|value| {
+                    rule.tool_names.iter().any(|candidate| candidate == value)
+                });
+            let operation_matches = rule.operations.is_empty()
+                || rule.operations.iter().any(|candidate| candidate == &event.operation);
+            let resource_matches = rule.resource_prefixes.is_empty()
+                || event.resource.as_ref().is_some_and(|value| {
+                    rule.resource_prefixes.iter().any(|prefix| value.starts_with(prefix))
+                });
+            let risk_matches = rule.risk_tags.is_empty()
+                || rule.risk_tags.iter().any(|required| {
+                    event.risk_tags.iter().any(|actual| actual == required)
+                });
+
+            if !(kind_matches
+                && server_matches
+                && tool_matches
+                && operation_matches
+                && resource_matches
+                && risk_matches)
+            {
+                continue;
+            }
+
+            let would_deny = rule.action == DecisionAction::Deny;
+            let action = match (self.mode, rule.action) {
+                (EnforcementMode::Audit, DecisionAction::Deny) => DecisionAction::Alert,
+                (_, action) => action,
+            };
+
+            return AgentActionDecision {
+                action,
+                rule_id: Some(rule.id.clone()),
+                reason: "matched agent-action policy".to_string(),
+                policy_version: self.version,
+                would_deny,
+            };
+        }
+
+        AgentActionDecision {
+            action: DecisionAction::Allow,
+            rule_id: None,
+            reason: "no matching agent-action rule".to_string(),
             policy_version: self.version,
             would_deny: false,
         }
@@ -958,6 +1075,89 @@ mod tests {
         assert!(guard.accept(20));
         assert!(guard.accept(21));
         assert_eq!(guard.highest_accepted(), Some(21));
+    }
+
+    #[test]
+    fn agent_action_policy_matches_all_populated_dimensions() {
+        let policy = PolicyBundle {
+            version: 5,
+            mode: EnforcementMode::Enforce,
+            rules: vec![],
+            agent_action_rules: vec![AgentActionRule {
+                id: "deny-sensitive-write".into(),
+                action: DecisionAction::Deny,
+                kinds: vec![AgentActionKind::McpToolCall],
+                mcp_servers: vec!["filesystem".into()],
+                tool_names: vec!["write_file".into()],
+                operations: vec!["write".into()],
+                resource_prefixes: vec!["/etc/".into()],
+                risk_tags: vec!["filesystem_write".into()],
+            }],
+            ransomware_response: None,
+        };
+        let event = AgentActionEvent {
+            event_id: "a-1".into(),
+            timestamp: "2026-10-04T00:00:00Z".into(),
+            device_id: "device".into(),
+            pid: Some(7),
+            agent_id: Some("agent-a".into()),
+            session_id: None,
+            kind: AgentActionKind::McpToolCall,
+            mcp_server: Some("filesystem".into()),
+            tool_name: Some("write_file".into()),
+            operation: "write".into(),
+            resource: Some("/etc/hosts".into()),
+            risk_tags: vec!["filesystem_write".into()],
+        };
+
+        let decision = policy.evaluate_agent_action(&event);
+        assert_eq!(decision.action, DecisionAction::Deny);
+        assert!(decision.would_deny);
+
+        let mut different = event.clone();
+        different.resource = Some("/tmp/demo".into());
+        assert_eq!(
+            policy.evaluate_agent_action(&different).action,
+            DecisionAction::Allow
+        );
+    }
+
+    #[test]
+    fn audit_agent_action_deny_becomes_alert() {
+        let policy = PolicyBundle {
+            version: 6,
+            mode: EnforcementMode::Audit,
+            rules: vec![],
+            agent_action_rules: vec![AgentActionRule {
+                id: "audit-tool".into(),
+                action: DecisionAction::Deny,
+                kinds: vec![],
+                mcp_servers: vec![],
+                tool_names: vec!["shell_exec".into()],
+                operations: vec![],
+                resource_prefixes: vec![],
+                risk_tags: vec![],
+            }],
+            ransomware_response: None,
+        };
+        let event = AgentActionEvent {
+            event_id: "a-2".into(),
+            timestamp: "2026-10-04T00:00:00Z".into(),
+            device_id: "device".into(),
+            pid: None,
+            agent_id: None,
+            session_id: None,
+            kind: AgentActionKind::McpToolCall,
+            mcp_server: Some("shell".into()),
+            tool_name: Some("shell_exec".into()),
+            operation: "execute".into(),
+            resource: None,
+            risk_tags: vec![],
+        };
+
+        let decision = policy.evaluate_agent_action(&event);
+        assert_eq!(decision.action, DecisionAction::Alert);
+        assert!(decision.would_deny);
     }
 
     #[test]
