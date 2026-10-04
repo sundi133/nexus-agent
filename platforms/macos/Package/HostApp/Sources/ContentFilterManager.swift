@@ -21,6 +21,8 @@ final class ContentFilterManager: ObservableObject {
 
                 let configuration = NEFilterProviderConfiguration()
                 configuration.filterSockets = true
+                configuration.filterDataProviderBundleIdentifier =
+                    SystemExtensionManager.filterExtensionIdentifier
 
                 let host = self.testBlockedHost
                     .trimmingCharacters(in: .whitespacesAndNewlines)
