@@ -14,4 +14,4 @@ pub use worker::{RuntimeCycleReport, RuntimeWorker};
 
 pub use source::{IngestStats, JsonlTailer};
 
-pub use local_ingest::spawn_local_ingest;
+pub use local_ingest::{spawn_local_ingest, AgentActionAuditRecord};
