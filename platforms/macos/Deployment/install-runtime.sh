@@ -27,9 +27,10 @@ PLIST_SOURCE="${SCRIPT_DIR}/ai.votal.nexus.runtime.plist"
 
 next_available_id() {
   local kind="$1"
+  local attribute="$2"
   local id
   for id in $(seq 450 499); do
-    if ! dscl . -list "/$kind" UniqueID 2>/dev/null | awk '{print $2}' | grep -qx "$id"; then
+    if ! dscl . -list "/$kind" "$attribute" 2>/dev/null | awk '{print $2}' | grep -qx "$id"; then
       echo "$id"
       return 0
     fi
@@ -39,7 +40,7 @@ next_available_id() {
 }
 
 if ! dscl . -read "/Groups/$RUNTIME_GROUP" >/dev/null 2>&1; then
-  GROUP_ID="$(next_available_id Groups)"
+  GROUP_ID="$(next_available_id Groups PrimaryGroupID)"
   dscl . -create "/Groups/$RUNTIME_GROUP"
   dscl . -create "/Groups/$RUNTIME_GROUP" PrimaryGroupID "$GROUP_ID"
   dscl . -create "/Groups/$RUNTIME_GROUP" RealName "Votal Nexus Runtime"
@@ -48,7 +49,7 @@ else
 fi
 
 if ! dscl . -read "/Users/$RUNTIME_USER" >/dev/null 2>&1; then
-  USER_ID="$(next_available_id Users)"
+  USER_ID="$(next_available_id Users UniqueID)"
   dscl . -create "/Users/$RUNTIME_USER"
   dscl . -create "/Users/$RUNTIME_USER" UniqueID "$USER_ID"
   dscl . -create "/Users/$RUNTIME_USER" PrimaryGroupID "$GROUP_ID"
