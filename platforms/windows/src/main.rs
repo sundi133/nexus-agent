@@ -12,6 +12,7 @@ fn main() {
 
 #[cfg(windows)]
 mod service {
+    use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
     use crate::etw::{EtwProcessStart, ProcessTrace};
     use crate::file_etw::{EtwFileActivity, FileActivityKind, FileTrace};
     use crate::wfp::WfpSession;
@@ -64,8 +65,8 @@ mod service {
     const HEALTH_PATH: &str = r"C:\ProgramData\Votal\Nexus\health.json";
     const CONTAINMENT_DISABLE_PATH: &str =
         r"C:\ProgramData\Votal\Nexus\disable-containment";
-    // Development placeholder. Replace with Votal's pinned 32-byte Ed25519 public key.
-    const POLICY_PUBLIC_KEY: [u8; 32] = [0; 32];
+    const POLICY_PUBLIC_KEY_PATH: &str =
+        r"C:\Program Files\Votal\Nexus\policy-public-key.b64";
 
     #[derive(Debug, Clone)]
     struct ProcessInfo {
@@ -919,14 +920,17 @@ mod service {
         Some(candidate)
     }
 
-    fn load_verified_policy() -> Option<PolicyBundle> {
-        if POLICY_PUBLIC_KEY.iter().all(|byte| *byte == 0) {
-            return None;
-        }
+    fn load_policy_public_key() -> Option<[u8; 32]> {
+        let encoded = std::fs::read_to_string(POLICY_PUBLIC_KEY_PATH).ok()?;
+        let decoded = BASE64.decode(encoded.trim()).ok()?;
+        decoded.try_into().ok()
+    }
 
+    fn load_verified_policy() -> Option<PolicyBundle> {
+        let public_key = load_policy_public_key()?;
         let envelope_bytes = std::fs::read(POLICY_PATH).ok()?;
         let envelope: SignedPolicyEnvelope = serde_json::from_slice(&envelope_bytes).ok()?;
-        let policy = verify_signed_policy(&envelope, &POLICY_PUBLIC_KEY).ok()?;
+        let policy = verify_signed_policy(&envelope, &public_key).ok()?;
         if !accept_policy_version(policy.version) {
             return None;
         }
