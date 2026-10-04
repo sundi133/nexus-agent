@@ -43,5 +43,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ai.votal.nexus.agent.endpoint
         PRODUCT_NAME: NexusEndpointExtension
         CODE_SIGN_STYLE: Automatic
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../../../core/include"
+        LIBRARY_SEARCH_PATHS:
+          - "$(SRCROOT)/Generated"
+        OTHER_LDFLAGS:
+          - "-lnexus_agent_core"
+    preBuildScripts:
+      - name: Build shared Rust policy core
+        script: '"${SRCROOT}/../scripts/build_core_universal.sh"'
+        basedOnDependencyAnalysis: false
     dependencies:
       - sdk: libEndpointSecurity.tbd
