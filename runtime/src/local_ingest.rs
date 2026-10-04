@@ -46,7 +46,6 @@ use std::{
             net::{UnixListener, UnixStream},
         },
     },
-    path::Path,
 };
 
 const MAX_HEADER_BYTES: usize = 16 * 1024;
