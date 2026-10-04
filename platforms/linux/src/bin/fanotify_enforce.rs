@@ -242,6 +242,7 @@ mod linux_enforce {
                     executable_paths: vec!["/tmp/nexus-deny-test".into()],
                     destination_hosts: vec![],
                 }],
+                ransomware_response: None,
             }
         }
 
