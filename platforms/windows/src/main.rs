@@ -9,7 +9,7 @@ fn main() {
 #[cfg(windows)]
 mod service {
     use crate::etw::{EtwProcessStart, ProcessTrace};
-    use nexus_agent_core::{verify_signed_policy, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
+    use nexus_agent_core::{verify_signed_policy, AgentHealth, CapabilityState, EventKind, PolicyBundle, SecurityEvent, SignedPolicyEnvelope};
     use std::{
         collections::HashMap,
         ffi::OsString,
@@ -108,12 +108,23 @@ mod service {
         match ProcessTrace::start(etw_tx) {
             Ok(_trace) => {
                 let _ = write_diagnostic("ETW process-start telemetry active");
+                let health = build_health(
+                    policy.as_ref(),
+                    CapabilityState::Active,
+                    "ETW Microsoft-Windows-Kernel-Process",
+                );
+                let _ = write_health(&health);
                 run_etw_loop(&shutdown_rx, &etw_rx, policy.as_ref());
             }
             Err(error) => {
-                let _ = write_diagnostic(&format!(
-                    "ETW unavailable ({error}); falling back to snapshot polling"
-                ));
+                let detail = format!("ETW unavailable; Tool Help polling fallback: {error}");
+                let _ = write_diagnostic(&detail);
+                let health = build_health(
+                    policy.as_ref(),
+                    CapabilityState::Fallback,
+                    &detail,
+                );
+                let _ = write_health(&health);
                 run_snapshot_loop(&shutdown_rx, policy.as_ref());
             }
         }
@@ -243,6 +254,56 @@ mod service {
         Ok(())
     }
 
+
+    fn build_health(
+        policy: Option<&PolicyBundle>,
+        telemetry_state: CapabilityState,
+        telemetry_detail: &str,
+    ) -> AgentHealth {
+        let policy_version = policy.map(|policy| policy.version);
+        let policy_state = if policy.is_some() {
+            CapabilityState::Active
+        } else {
+            CapabilityState::Unavailable
+        };
+        let enforcement_state = if policy.is_some() {
+            CapabilityState::Shadow
+        } else {
+            CapabilityState::Unavailable
+        };
+
+        AgentHealth::new("windows", policy_version)
+            .with_capability(
+                "policy_verification",
+                policy_state,
+                if policy.is_some() {
+                    "Ed25519 signed policy verified"
+                } else {
+                    "no verified policy loaded"
+                },
+            )
+            .with_capability("process_telemetry", telemetry_state, telemetry_detail)
+            .with_capability(
+                "process_enforcement",
+                enforcement_state,
+                if policy.is_some() {
+                    "policy decisions are shadow-only; no process blocking"
+                } else {
+                    "no verified policy; process blocking unavailable"
+                },
+            )
+    }
+
+    fn write_health(health: &AgentHealth) -> io::Result<()> {
+        let path = Path::new(HEALTH_PATH);
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent)?;
+        }
+        let mut file = std::fs::File::create(path)?;
+        serde_json::to_writer_pretty(&mut file, health)?;
+        file.write_all(b"\n")?;
+        Ok(())
+    }
 
     fn load_verified_policy() -> Option<PolicyBundle> {
         if POLICY_PUBLIC_KEY.iter().all(|byte| *byte == 0) {
