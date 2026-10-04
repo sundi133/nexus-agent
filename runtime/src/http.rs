@@ -1,4 +1,8 @@
-use crate::{config::ControlPlaneConfig, credentials::read_secret_file};
+use crate::{
+    config::ControlPlaneConfig,
+    credentials::read_secret_file,
+    device_credential::load_device_credential,
+};
 use nexus_agent_core::AgentHealth;
 use reqwest::{
     blocking::{Client, Response},
@@ -30,6 +34,12 @@ pub trait ControlPlaneTransport {
 
     fn post_health(&self, health: &AgentHealth) -> Result<(), TransportError>;
     fn post_events(&self, jsonl: &[u8]) -> Result<(), TransportError>;
+}
+
+#[derive(Debug)]
+struct RequestCredential {
+    bearer_token: String,
+    device_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -73,11 +83,14 @@ impl HttpControlPlane {
         &self,
         previous_etag: Option<&str>,
     ) -> Result<PolicyFetch, TransportError> {
-        let token = self.read_token()?;
+        let credential = self.read_credential()?;
         let mut request = self
             .client
             .get(&self.config.policy_url)
-            .bearer_auth(token);
+            .bearer_auth(&credential.bearer_token);
+        if let Some(device_id) = credential.device_id.as_deref() {
+            request = request.header("x-nexus-device-id", device_id);
+        }
 
         if let Some(etag) = previous_etag {
             request = request.header(IF_NONE_MATCH, etag);
@@ -100,36 +113,55 @@ impl HttpControlPlane {
     }
 
     fn post_health_impl(&self, health: &AgentHealth) -> Result<(), TransportError> {
-        let token = self.read_token()?;
-        let response = self
+        let credential = self.read_credential()?;
+        let mut request = self
             .client
             .post(&self.config.health_url)
-            .bearer_auth(token)
-            .json(health)
-            .send()?;
+            .bearer_auth(&credential.bearer_token);
+        if let Some(device_id) = credential.device_id.as_deref() {
+            request = request.header("x-nexus-device-id", device_id);
+        }
+        let response = request.json(health).send()?;
         ensure_success(&response)
     }
 
     fn post_events_impl(&self, jsonl: &[u8]) -> Result<(), TransportError> {
-        let token = self.read_token()?;
-        let response = self
+        let credential = self.read_credential()?;
+        let mut request = self
             .client
             .post(&self.config.events_url)
-            .bearer_auth(token)
+            .bearer_auth(&credential.bearer_token);
+        if let Some(device_id) = credential.device_id.as_deref() {
+            request = request.header("x-nexus-device-id", device_id);
+        }
+        let response = request
             .header("content-type", "application/x-ndjson")
             .body(jsonl.to_vec())
             .send()?;
         ensure_success(&response)
     }
 
-    fn read_token(&self) -> Result<String, TransportError> {
-        read_secret_file(
-            &self.config.bearer_token_file,
-            1,
-            16 * 1024,
-            true,
-        )
-        .map_err(|_| TransportError::Credential)
+    fn read_credential(&self) -> Result<RequestCredential, TransportError> {
+        if let Some(path) = self.config.device_credential_file.as_deref() {
+            let credential =
+                load_device_credential(path).map_err(|_| TransportError::Credential)?;
+            return Ok(RequestCredential {
+                bearer_token: credential.bearer_token,
+                device_id: Some(credential.device_id),
+            });
+        }
+
+        let path = self
+            .config
+            .bearer_token_file
+            .as_deref()
+            .ok_or(TransportError::Credential)?;
+        let bearer_token = read_secret_file(path, 1, 16 * 1024, true)
+            .map_err(|_| TransportError::Credential)?;
+        Ok(RequestCredential {
+            bearer_token,
+            device_id: None,
+        })
     }
 }
 
