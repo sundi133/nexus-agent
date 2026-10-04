@@ -25,6 +25,8 @@
     "event_source_path": {"type": "string", "minLength": 1},
     "event_offset_path": {"type": "string", "minLength": 1},
     "health_source_path": {"type": "string", "minLength": 1},
+    "local_ingest_port": {"type": ["integer", "null"], "minimum": 1024, "maximum": 65535},
+    "local_ingest_token_file": {"type": ["string", "null"], "minLength": 1},
     "cycle_interval_ms": {"type": "integer", "minimum": 1},
     "spool_max_bytes": {"type": "integer", "minimum": 1},
     "segment_max_bytes": {"type": "integer", "minimum": 1}
