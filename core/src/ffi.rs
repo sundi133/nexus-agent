@@ -88,6 +88,34 @@ pub extern "C" fn nexus_policy_from_signed_json(
 }
 
 #[no_mangle]
+pub extern "C" fn nexus_policy_from_signed_json_with_public_key_b64(
+    envelope_ptr: *const u8,
+    envelope_len: usize,
+    public_key_b64_ptr: *const u8,
+    public_key_b64_len: usize,
+) -> *mut NexusPolicyHandle {
+    let Some(key_b64_bytes) = bytes(public_key_b64_ptr, public_key_b64_len) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(key_b64) = str::from_utf8(key_b64_bytes) else {
+        return std::ptr::null_mut();
+    };
+    let Ok(key_bytes) = BASE64.decode(key_b64.trim()) else {
+        return std::ptr::null_mut();
+    };
+    if key_bytes.len() != 32 {
+        return std::ptr::null_mut();
+    }
+
+    nexus_policy_from_signed_json(
+        envelope_ptr,
+        envelope_len,
+        key_bytes.as_ptr(),
+        key_bytes.len(),
+    )
+}
+
+#[no_mangle]
 pub extern "C" fn nexus_policy_free(handle: *mut NexusPolicyHandle) {
     if handle.is_null() {
         return;
@@ -387,6 +415,42 @@ mod tests {
             NexusDecision::Deny
         );
 
+        nexus_policy_free(handle);
+    }
+
+    #[test]
+    fn ffi_accepts_base64_public_key() {
+        let policy = PolicyBundle {
+            version: 12,
+            mode: EnforcementMode::Audit,
+            rules: vec![PolicyRule {
+                id: "audit-demo".into(),
+                category: "execution".into(),
+                action: DecisionAction::Alert,
+                executable_paths: vec!["/tmp/demo".into()],
+                destination_hosts: vec![],
+            }],
+            ransomware_response: None,
+        };
+        let signing_key = SigningKey::from_bytes(&[4u8; 32]);
+        let payload = serde_json::to_vec(&policy).unwrap();
+        let envelope = SignedPolicyEnvelope {
+            algorithm: "Ed25519".into(),
+            key_id: "test".into(),
+            payload_b64: BASE64.encode(&payload),
+            signature_b64: BASE64.encode(signing_key.sign(&payload).to_bytes()),
+        };
+        let envelope_json = serde_json::to_vec(&envelope).unwrap();
+        let key_b64 = BASE64.encode(signing_key.verifying_key().as_bytes());
+
+        let handle = nexus_policy_from_signed_json_with_public_key_b64(
+            envelope_json.as_ptr(),
+            envelope_json.len(),
+            key_b64.as_ptr(),
+            key_b64.len(),
+        );
+        assert!(!handle.is_null());
+        assert_eq!(nexus_policy_version(handle), 12);
         nexus_policy_free(handle);
     }
 
