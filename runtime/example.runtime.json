@@ -10,6 +10,11 @@
   "spool_dir": "/var/lib/votal/nexus/spool",
   "policy_signed_path": "/var/lib/votal/nexus/policy.signed.json",
   "policy_watermark_path": "/var/lib/votal/nexus/policy.version",
+  "policy_public_key_file": "/etc/votal/nexus/policy-public-key.b64",
+  "event_source_path": "/var/lib/votal/nexus/events.jsonl",
+  "event_offset_path": "/var/lib/votal/nexus/events.offset",
+  "health_source_path": "/var/lib/votal/nexus/health.json",
+  "cycle_interval_ms": 5000,
   "spool_max_bytes": 67108864,
   "segment_max_bytes": 4194304
 }
