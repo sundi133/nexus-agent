@@ -4,11 +4,14 @@ Nexus Agent is the endpoint collection and policy-enforcement foundation for Vot
 
 ## Current implementation
 
-This repository is starting from a minimal baseline. The first milestone adds a portable Rust policy core and a JSON-lines evaluation CLI that can be tested without privileged endpoint APIs.
+Nexus Agent now contains a shared signed-policy/detection core, a managed control-plane runtime, and native platform adapters.
 
-- `core/`: shared event model, deterministic policy evaluation, ransomware-behavior scoring, and CLI.
-- `schemas/`: versioned JSON schemas for event and policy contracts.
-- `platforms/`: native adapter design for macOS, Windows, and Linux.
+- `core/`: Ed25519-verified policy engine, anti-rollback primitives, health contracts, ransomware behavior correlation, response planning, C ABI, and policy signing utility.
+- `runtime/`: HTTPS policy retrieval, local verification, health/events upload, credential rotation, bounded offline spool, and last-known-good activation.
+- `platforms/macos/`: Endpoint Security collection/enforcement, packaged system extension, Network Extension filtering, health reporting, and guarded ransomware containment.
+- `platforms/windows/`: Windows service, process/file ETW, WFP network enforcement, health reporting, and guarded ransomware containment.
+- `platforms/linux/`: fanotify telemetry/permission harnesses, nftables enforcement, health reporting, and guarded ransomware containment.
+- `schemas/`: versioned event, policy, health, and runtime configuration contracts.
 
 ## Quick start
 
