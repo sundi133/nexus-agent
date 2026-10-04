@@ -18,7 +18,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
       - name: Test Windows adapter
         run: cargo test --manifest-path platforms/windows/Cargo.toml
       - name: Build Windows adapter
         run: cargo build --release --manifest-path platforms/windows/Cargo.toml
+      - name: Compile WFP control utility
+        shell: cmd
+        run: cl /nologo /W4 /WX /DUNICODE /D_UNICODE platforms\windows\native\wfp_control.c /Fe:platforms\windows\native\wfp_control.exe fwpuclnt.lib ws2_32.lib rpcrt4.lib
