@@ -17,7 +17,7 @@ Status: implemented in PR #1; native device validation still required.
 - no blocking
 
 ## M2 — local detection pipeline
-Status: in progress.
+Status: implemented in PR #1; native integration/load validation still required.
 
 - per-process bounded time-window feature aggregation
 - bounded producer/consumer queue
@@ -26,14 +26,14 @@ Status: in progress.
 - synthetic replay tests
 
 ## M3 — macOS narrow enforcement
-Planned.
+Status: development harness implemented; entitled-device validation and production policy authentication still required.
 
-- AUTH_EXEC only at first
+- AUTH_EXEC exact-path enforcement harness
 - local deterministic policy decisions
-- explicit deadline/fallback semantics
+- fail-open fallback semantics and callback-latency telemetry
 - audit/shadow mode
 - enforcement outcome telemetry
-- emergency rollback/kill switch
+- atomic emergency kill switch via signal
 
 ## M4 — macOS production packaging
 Planned.
