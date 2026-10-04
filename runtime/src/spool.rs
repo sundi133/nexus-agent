@@ -96,6 +96,31 @@ impl DiskSpool {
     pub fn read_segment(&self, path: &Path) -> Result<Vec<u8>, SpoolError> {
         Ok(fs::read(path)?)
     }
+    pub fn segment_id(&self, path: &Path) -> Result<String, SpoolError> {
+        if path.parent() != Some(self.dir.as_path()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "segment is outside spool directory",
+            )
+            .into());
+        }
+
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid segment name"))?;
+
+        if stem.is_empty() || !stem.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "segment ID must be numeric",
+            )
+            .into());
+        }
+
+        Ok(stem.to_string())
+    }
+
 
     pub fn ack_segment(&self, path: &Path) -> Result<(), SpoolError> {
         if path.parent() != Some(self.dir.as_path()) {
@@ -181,6 +206,19 @@ mod tests {
         let stats = spool.stats().unwrap();
         assert!(stats.bytes <= 180);
         assert!(stats.dropped_segments > 0);
+    }
+
+    #[test]
+    fn segment_id_is_stable_filename_stem() {
+        let dir = tempdir().unwrap();
+        let mut spool = DiskSpool::open(dir.path().to_path_buf(), 1024, 256).unwrap();
+        spool.append(&json!({"event":"one"})).unwrap();
+        spool.seal_current().unwrap();
+        let path = spool.next_segment().unwrap().unwrap();
+        let first = spool.segment_id(&path).unwrap();
+        let second = spool.segment_id(&path).unwrap();
+        assert_eq!(first, second);
+        assert!(first.bytes().all(|byte| byte.is_ascii_digit()));
     }
 
     #[test]
