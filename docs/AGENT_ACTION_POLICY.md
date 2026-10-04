@@ -227,3 +227,36 @@ cargo run --manifest-path runtime/Cargo.toml --bin nexus-agent-action -- --event
 ```
 
 Production MCP/agent integrations should use the same pre-action contract directly rather than shelling out to the CLI on every tool call.
+
+
+## MCP stdio enforcement proxy
+
+`nexus-mcp-stdio-proxy` is a generic enforcement wrapper for local stdio MCP servers. MCP stdio uses newline-delimited JSON-RPC; the proxy remains transparent for lifecycle/discovery traffic, but intercepts `tools/call` and `resources/read` before the real server receives them.
+
+Example:
+
+```sh
+cargo run --manifest-path runtime/Cargo.toml --bin nexus-mcp-stdio-proxy -- \
+  --server-id filesystem \
+  --device-id endpoint-123 \
+  --token-file /var/lib/votal/nexus/producers/mcp-filesystem.token \
+  --unix /run/votal/nexus/agent-actions.sock \
+  --on-unavailable deny \
+  -- npx -y @modelcontextprotocol/server-filesystem /approved/root
+```
+
+The command after the final `--` is the real MCP server. Configure the MCP host to launch the Nexus proxy instead of launching that server directly.
+
+For `tools/call`, Nexus sends only normalized metadata such as server ID, tool name, operation, process identity, and policy context. The proxy intentionally does **not** copy the tool `arguments` object into the authorization event. For `resources/read`, the URI is included as the normalized resource so resource-prefix policies can apply.
+
+Behavior:
+
+- allow: request is forwarded unchanged;
+- alert: request is forwarded unchanged and the proxy logs the policy alert to stderr;
+- deny: request is not forwarded; the proxy returns JSON-RPC error code `-32003`;
+- authorization unavailable: default is deny with JSON-RPC error `-32004`; `--on-unavailable allow` must be explicitly configured to fail open;
+- MCP frames larger than 4 MiB are rejected.
+
+The proxy writes protocol traffic only to stdout. Diagnostics go to stderr so MCP framing is not corrupted.
+
+This is the first generic producer-side enforcement adapter. Streamable HTTP MCP, embedded SDK middleware, and framework-native adapters remain separate integration paths.
